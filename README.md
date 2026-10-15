@@ -8,6 +8,15 @@ cloud AI or external APIs.
 > **Status:** Phase 7 release-candidate slice. Automatic findings remain heuristic
 > hypotheses, not confirmed protocol facts.
 
+## Demo
+
+- **Live demo:** <https://packetscope-demo.onrender.com>
+- **Video walkthrough:** <https://youtu.be/kQIqGE6kvfc>
+
+The hosted instance is provided for evaluation and demonstration. Do not upload
+confidential captures there; use the local server or the Docker workflow below
+for private evidence.
+
 ## What works in this iteration
 
 - BIN, whitespace-oriented HEX, classic PCAP, and basic PCAPNG imports.
@@ -117,6 +126,37 @@ The Docker base image is pinned to the Linux x86-64 digest for
 Docker registry and Debian package mirror unless those inputs are already
 cached by the machine; after the image exists, the test-container command is
 network-isolated.
+
+## Render deployment
+
+The live demo is deployed as a Render **Web Service** from the repository's
+`main` branch using the checked-in `Dockerfile`. To reproduce that setup:
+
+1. Create a Web Service connected to this repository and select the `main`
+   branch.
+2. Choose **Docker** as the runtime. Leave **Root Directory** empty so the
+   repository root is used.
+3. Set **Dockerfile Path** to `./Dockerfile` and **Docker Build Context
+   Directory** to `.`.
+4. Leave **Docker Command** empty so Render uses the `CMD` in the Dockerfile.
+5. Enable **Auto-Deploy: On Commit** if deployments should follow updates to
+   `main`.
+6. After deployment, verify the service with:
+
+   ```bash
+   curl https://packetscope-demo.onrender.com/api/health
+   ```
+
+   A healthy service returns JSON containing `"status": "ok"` and
+   `"local_only": true`.
+
+The container listens on `0.0.0.0:8765`, exposes `/api/health` for a health
+check, and has no required secrets or external services. Render's public URL
+is useful for the demo, but the local-only privacy model still means that
+private packet captures should be analyzed locally.
+
+The same values are collected in [`docs/render-deploy.md`](docs/render-deploy.md)
+for deployment reviews or service recreation.
 
 ## CLI
 
