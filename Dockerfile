@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends --yes make=4.3-4.1 \
+    && apt-get install --no-install-recommends --yes make \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Makefile pyproject.toml README.md requirements.lock ./
