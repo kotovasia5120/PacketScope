@@ -3,7 +3,7 @@
 const state = {
   result: null, annotations: [], selectedHypothesis: null, controller: null, jobId: null,
   compare: { ids: [], diffs: [], cursor: 0, mode: "offset" }, scrollTop: 0,
-  undo: [], redo: [], demoProfile: null, flowId: "", direction: "both"
+  undo: [], redo: [], demoProfile: null, flowId: "", direction: "both", requestVersion: 0
 };
 const $ = (selector) => document.querySelector(selector);
 const node = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = String(text); if (cls) value.className = cls; return value; };
@@ -49,11 +49,12 @@ document.addEventListener("keydown", (event) => { if (!event.ctrlKey || (event.k
 
 async function analyzeFile(file) {
   if (!file) { setStatus("Choose a capture before analyzing.", true); return; }
-  state.controller = new AbortController(); $("#cancel-button").hidden = false; $("#analyze-button").disabled = true; $("#analysis-progress").hidden = false; setStatus("Reading evidence and analyzing locally…");
+  const version = ++state.requestVersion; const controller = new AbortController(); state.controller = controller; let jobId = null;
+  $("#cancel-button").hidden = false; $("#analyze-button").disabled = true; $("#analysis-progress").hidden = false; setStatus("Reading evidence and analyzing locally…");
   const body = new FormData(); body.append("file", file, file.name); body.append("format", $("#format").value); if ($("#raw-analysis").checked) body.append("raw", "true");
-  try { const response = await fetch("/api/jobs", { method: "POST", body, signal: state.controller.signal }); const queued = await response.json(); if (!response.ok) throw new Error(queued.error || "Could not queue analysis"); state.jobId = queued.job_id; let value; while (state.jobId) { await new Promise((resolve) => setTimeout(resolve, 60)); const statusResponse = await fetch(`/api/jobs/${state.jobId}`, { signal: state.controller.signal }); const status = await statusResponse.json(); $("#analysis-progress").value = Number(status.progress || 0) / 100; $("#progress-label").textContent = `${status.status} · ${status.progress || 0}%`; if (status.status === "COMPLETE") { value = status.result; break; } if (status.status === "FAILED") throw new Error(status.error || "Analysis failed"); if (status.status === "CANCELLED") throw new DOMException("Analysis cancelled", "AbortError"); } if (!value) throw new Error("Analysis did not return a result"); loadResult(value); setStatus(`Analyzed ${value.source.packet_count} packet(s) from ${value.source.name}.`); }
-  catch (error) { setStatus(error.name === "AbortError" ? "Analysis cancelled." : error.message, true); }
-  finally { state.controller = null; state.jobId = null; $("#cancel-button").hidden = true; $("#analyze-button").disabled = false; $("#analysis-progress").hidden = true; $("#progress-label").textContent = "Idle"; }
+  try { const response = await fetch("/api/jobs", { method: "POST", body, signal: controller.signal }); const queued = await response.json(); if (!response.ok) throw new Error(queued.error || "Could not queue analysis"); jobId = queued.job_id; if (version !== state.requestVersion) return; state.jobId = jobId; let value; while (jobId) { await new Promise((resolve) => setTimeout(resolve, 60)); const statusResponse = await fetch(`/api/jobs/${jobId}`, { signal: controller.signal }); const status = await statusResponse.json(); if (version !== state.requestVersion) return; $("#analysis-progress").value = Number(status.progress || 0) / 100; $("#progress-label").textContent = `${status.status} · ${status.progress || 0}%`; if (status.status === "COMPLETE") { value = status.result; break; } if (status.status === "FAILED") throw new Error(status.error || "Analysis failed"); if (status.status === "CANCELLED") throw new DOMException("Analysis cancelled", "AbortError"); } if (!value) throw new Error("Analysis did not return a result"); if (version !== state.requestVersion) return; loadResult(value); setStatus(`Analyzed ${value.source.packet_count} packet(s) from ${value.source.name}.`); }
+  catch (error) { if (version === state.requestVersion) setStatus(error.name === "AbortError" ? "Analysis cancelled." : error.message, true); }
+  finally { if (version !== state.requestVersion) return; state.controller = null; state.jobId = null; $("#cancel-button").hidden = true; $("#analyze-button").disabled = false; $("#analysis-progress").hidden = true; $("#progress-label").textContent = "Idle"; }
 }
 async function cancelCurrentJob() { const id = state.jobId; state.controller?.abort(); if (id) { try { await fetch(`/api/jobs/${id}`, { method: "DELETE" }); } catch { /* the server may already have completed cleanup */ } } }
 function downloadDemo(format) { const profile = $("#demo-profile").value; const link = document.createElement("a"); link.href = `/api/demo/download?profile=${encodeURIComponent(profile)}&format=${format}`; link.download = `packetscope-${profile}.${format}`; link.click(); setStatus(`${format.toUpperCase()} demo generated locally.`); }
