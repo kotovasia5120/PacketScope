@@ -32,6 +32,8 @@ test("opens, navigates, and completes both deterministic demo investigations", a
   await page.getByRole("button", { name: "Load demo" }).click();
   await expect(page.locator("#summary-grid")).toContainText("8");
   await expect(page.locator("#hypotheses-view .hypothesis-card").first()).toBeVisible();
+  await page.locator("#hypotheses-view .hypothesis-card").filter({ hasText: /counter|length/i }).first().click();
+  await expect(page.locator("#evidence-view")).toContainText(/Evidence basis|What would help confirm/i);
   await page.getByRole("button", { name: "Compare" }).click();
   await page.locator("#compare-select").selectOption(["0", "1", "2"]);
   await expect(page.locator("#compare-status")).toContainText("3 packets");
@@ -42,7 +44,10 @@ test("opens, navigates, and completes both deterministic demo investigations", a
   await expect(page.locator("#crc-view")).toContainText("CRC-16");
   await page.getByRole("button", { name: "Overview" }).click();
   await page.getByRole("button", { name: "Evaluate reference" }).click();
-  await expect(page.locator("#evaluation-view")).toContainText(/precision.*recall.*F1/i);
+  await expect(page.locator("#evaluation-view")).toContainText(/Trusted server reference/);
+  const schemaDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export protocol schema" }).click();
+  await (await schemaDownload).delete();
   await page.locator("#demo-profile").selectOption("crc32-le");
   await page.getByRole("button", { name: "Load demo" }).click();
   await expect(page.locator("#crc-view")).toContainText("CRC-32");
