@@ -1,7 +1,8 @@
 import unittest
 
 from packetscope.analysis import analyze_packets
-from packetscope.models import Packet
+from packetscope.errors import InputLimitError
+from packetscope.models import Limits, Packet
 
 
 class AnalysisTests(unittest.TestCase):
@@ -24,6 +25,23 @@ class AnalysisTests(unittest.TestCase):
         result = analyze_packets([Packet(0, b"abc")])
         self.assertEqual(result["hypotheses"], [])
         self.assertEqual(result["observations"]["comparison"]["regions"], [])
+
+    def test_two_packets_are_insufficient_for_heuristics(self):
+        packets = [Packet(0, b"\xaa\xbb\x01"), Packet(1, b"\xaa\xbb\x02")]
+        result = analyze_packets(packets)
+        self.assertEqual(result["hypotheses"], [])
+
+    def test_analysis_bounds_generators_and_packet_sizes(self):
+        limits = Limits(max_packets=2, max_packet_bytes=3)
+        with self.assertRaises(InputLimitError):
+            analyze_packets((Packet(index, b"abc") for index in range(3)), limits=limits)
+        with self.assertRaises(InputLimitError):
+            analyze_packets([Packet(0, b"abcd")], limits=limits)
+
+    def test_hypothesis_count_is_bounded_before_return(self):
+        packets = [Packet(index, bytes([0xAA, index, 0x01, 0x02])) for index in range(3)]
+        result = analyze_packets(packets, limits=Limits(max_hypotheses=1))
+        self.assertLessEqual(len(result["hypotheses"]), 1)
 
 
 if __name__ == "__main__":

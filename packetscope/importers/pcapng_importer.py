@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 
 from packetscope.errors import FormatError, InputLimitError
 from packetscope.models import ImportResult, Limits, Packet
@@ -12,6 +13,12 @@ SPB = 0x00000003
 EPB = 0x00000006
 
 
+@dataclass(frozen=True)
+class _Interface:
+    link_type: int
+    timestamp_resolution: float = 1_000_000.0
+
+
 def _read_u32(data: bytes, offset: int, endian: str) -> int:
     return struct.unpack_from(endian + "I", data, offset)[0]
 
@@ -19,7 +26,7 @@ def _read_u32(data: bytes, offset: int, endian: str) -> int:
 def parse_pcapng(data: bytes, name: str, limits: Limits) -> ImportResult:
     packets: list[Packet] = []
     warnings: list[str] = []
-    interfaces: dict[int, int] = {}
+    interfaces: dict[int, _Interface] = {}
     offset = 0
     endian: str | None = None
     while offset < len(data):
@@ -29,22 +36,25 @@ def parse_pcapng(data: bytes, name: str, limits: Limits) -> ImportResult:
         if raw_type == b"\x0a\x0d\x0d\x0a":
             block_endian = _section_endian(data, offset)
             total = _read_u32(data, offset + 4, block_endian)
-            _validate_block(data, offset, total, limits)
+            _validate_block(data, offset, total, block_endian, limits)
             if total < 28:
                 raise FormatError("PCAPNG section header is too short")
             endian = block_endian
+            interfaces = {}
             offset += total
             continue
         if endian is None:
             raise FormatError("PCAPNG must begin with a section header")
         block_type = _read_u32(data, offset, endian)
         total = _read_u32(data, offset + 4, endian)
-        _validate_block(data, offset, total, limits)
+        _validate_block(data, offset, total, endian, limits)
         if block_type == IDB:
             if total < 20:
                 raise FormatError("PCAPNG interface description is too short")
             link_type = struct.unpack_from(endian + "H", data, offset + 8)[0]
-            interfaces[len(interfaces)] = link_type
+            interfaces[len(interfaces)] = _Interface(
+                link_type, _timestamp_resolution(data, offset + 16, offset + total - 4, endian)
+            )
         elif block_type == EPB:
             _parse_epb(data, offset, total, endian, interfaces, packets, name, limits)
         elif block_type == SPB:
@@ -66,7 +76,7 @@ def _section_endian(data: bytes, offset: int) -> str:
     raise FormatError("PCAPNG section has invalid byte-order magic")
 
 
-def _validate_block(data: bytes, offset: int, total: int, limits: Limits) -> None:
+def _validate_block(data: bytes, offset: int, total: int, endian: str, limits: Limits) -> None:
     if total < 12 or total % 4:
         raise FormatError(f"invalid PCAPNG block length {total} at offset {offset}")
     if total > limits.max_pcapng_block_bytes:
@@ -75,6 +85,31 @@ def _validate_block(data: bytes, offset: int, total: int, limits: Limits) -> Non
         )
     if offset + total > len(data):
         raise FormatError(f"PCAPNG block at offset {offset} is truncated")
+    trailer = _read_u32(data, offset + total - 4, endian)
+    if trailer != total:
+        raise FormatError(f"PCAPNG block at offset {offset} has a mismatched trailing length")
+
+
+def _timestamp_resolution(data: bytes, start: int, end: int, endian: str) -> float:
+    """Read IDB if_tsresol, defaulting to the PCAPNG microsecond resolution."""
+    offset = start
+    while offset + 4 <= end:
+        code, length = struct.unpack_from(endian + "HH", data, offset)
+        offset += 4
+        if code == 0:
+            return 1_000_000.0
+        if offset + length > end:
+            raise FormatError("PCAPNG interface option is truncated")
+        value = data[offset : offset + length]
+        offset += (length + 3) & ~3
+        if offset > end:
+            raise FormatError("PCAPNG interface option padding is truncated")
+        if code == 9:
+            if length != 1:
+                raise FormatError("PCAPNG timestamp resolution option must contain one byte")
+            raw = value[0]
+            return float(2**(raw & 0x7F) if raw & 0x80 else 10**raw)
+    return 1_000_000.0
 
 
 def _append_packet(
@@ -86,6 +121,7 @@ def _append_packet(
     interface_id: int | None,
     name: str,
     limits: Limits,
+    timestamp: float | None,
 ) -> None:
     if len(packets) >= limits.max_packets:
         raise InputLimitError(f"packet count exceeds limit {limits.max_packets}")
@@ -96,6 +132,7 @@ def _append_packet(
             index=len(packets),
             payload=payload,
             source_offset=source_offset,
+            timestamp=timestamp,
             original_length=original_length,
             link_type=link_type,
             interface_id=interface_id,
@@ -109,16 +146,19 @@ def _parse_epb(
     offset: int,
     total: int,
     endian: str,
-    interfaces: dict[int, int],
+    interfaces: dict[int, _Interface],
     packets: list[Packet],
     name: str,
     limits: Limits,
 ) -> None:
     if total < 32:
         raise FormatError("PCAPNG enhanced packet block is too short")
-    interface_id, _ts_high, _ts_low, captured, original = struct.unpack_from(
+    interface_id, ts_high, ts_low, captured, original = struct.unpack_from(
         endian + "IIIII", data, offset + 8
     )
+    interface = interfaces.get(interface_id)
+    if interface is None:
+        raise FormatError(f"PCAPNG enhanced packet references unknown interface {interface_id}")
     payload_offset = offset + 28
     padded = (captured + 3) & ~3
     if payload_offset + padded + 4 > offset + total:
@@ -128,10 +168,11 @@ def _parse_epb(
         data[payload_offset : payload_offset + captured],
         payload_offset,
         original,
-        interfaces.get(interface_id),
+        interface.link_type,
         interface_id,
         name,
         limits,
+        (ts_high * 2**32 + ts_low) / interface.timestamp_resolution,
     )
 
 
@@ -140,7 +181,7 @@ def _parse_spb(
     offset: int,
     total: int,
     endian: str,
-    interfaces: dict[int, int],
+    interfaces: dict[int, _Interface],
     packets: list[Packet],
     name: str,
     limits: Limits,
@@ -148,7 +189,7 @@ def _parse_spb(
     if total < 16:
         raise FormatError("PCAPNG simple packet block is too short")
     original = _read_u32(data, offset + 8, endian)
-    captured = total - 16
+    captured = min(original, total - 16)
     payload_offset = offset + 12
     if captured > limits.max_packet_bytes:
         raise InputLimitError(f"PCAPNG packet exceeds limit {limits.max_packet_bytes}")
@@ -157,8 +198,9 @@ def _parse_spb(
         data[payload_offset : payload_offset + captured],
         payload_offset,
         original,
-        interfaces.get(0),
+        interfaces[0].link_type if 0 in interfaces else None,
         0,
         name,
         limits,
+        None,
     )

@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import unittest
 import urllib.error
@@ -59,6 +60,29 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 413)
         with self.request("/api/health") as response:
             self.assertEqual(response.status, 200)
+
+    def test_short_body_is_rejected_and_server_survives(self):
+        sock = socket.create_connection(("127.0.0.1", self.server.server_port), timeout=2)
+        request = (
+            "POST /api/analyze HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.server.server_port}\r\n"
+            "Content-Length: 10\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n"
+            "abc"
+        ).encode()
+        sock.sendall(request)
+        sock.shutdown(socket.SHUT_WR)
+        response = sock.recv(4096)
+        sock.close()
+        self.assertIn(b"400", response.split(b"\r\n", 1)[0])
+        with self.request("/api/health") as health:
+            self.assertEqual(health.status, 200)
+
+    def test_response_limit_is_applied(self):
+        self.server.limits = Limits(max_input_bytes=512, max_response_bytes=10)
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/health")
+        self.assertEqual(context.exception.code, 500)
 
 
 if __name__ == "__main__":

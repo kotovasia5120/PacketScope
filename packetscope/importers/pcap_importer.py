@@ -21,7 +21,7 @@ def parse_pcap(data: bytes, name: str, limits: Limits) -> ImportResult:
     if magic not in _MAGICS:
         raise FormatError("unsupported PCAP magic")
     endian, resolution = _MAGICS[magic]
-    version_major, version_minor, _zone, _sigfigs, _snaplen, link_type = struct.unpack_from(
+    version_major, version_minor, _zone, _sigfigs, snaplen, link_type = struct.unpack_from(
         endian + "HHiiii", data, 4
     )
     if (version_major, version_minor) != (2, 4):
@@ -42,6 +42,12 @@ def parse_pcap(data: bytes, name: str, limits: Limits) -> ImportResult:
             raise InputLimitError(
                 f"PCAP packet at offset {offset} exceeds limit {limits.max_packet_bytes}"
             )
+        if snaplen and captured > snaplen:
+            raise FormatError(
+                f"PCAP packet at offset {offset} exceeds declared snaplen {snaplen}"
+            )
+        if ts_fraction >= resolution:
+            raise FormatError(f"PCAP packet at offset {offset} has an invalid timestamp fraction")
         end = payload_offset + captured
         if end > len(data):
             raise FormatError(f"PCAP packet at offset {offset} is truncated")

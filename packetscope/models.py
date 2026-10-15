@@ -12,6 +12,18 @@ class Limits:
     max_hypotheses: int = 500
     max_response_bytes: int = 32 * 1024 * 1024
 
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("max_input_bytes", self.max_input_bytes),
+            ("max_packet_bytes", self.max_packet_bytes),
+            ("max_packets", self.max_packets),
+            ("max_pcapng_block_bytes", self.max_pcapng_block_bytes),
+            ("max_hypotheses", self.max_hypotheses),
+            ("max_response_bytes", self.max_response_bytes),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+
 
 @dataclass(frozen=True)
 class Packet:

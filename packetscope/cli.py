@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from packetscope.analysis import analyze_packets
+from packetscope.errors import InputLimitError
 from packetscope.export import dumps_result
 from packetscope.importers import import_bytes
 from packetscope.models import Limits
@@ -30,9 +31,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         serve(args.host, args.port)
         return 0
+    limits = Limits()
+    file_size = args.input.stat().st_size
+    if file_size > limits.max_input_bytes:
+        raise InputLimitError(
+            f"input is {file_size} bytes; limit is {limits.max_input_bytes}"
+        )
     data = args.input.read_bytes()
-    imported = import_bytes(args.input.name, data, args.format)
-    result = analyze_packets(imported.packets)
+    if len(data) > limits.max_input_bytes:
+        raise InputLimitError(
+            f"input is {len(data)} bytes; limit is {limits.max_input_bytes}"
+        )
+    imported = import_bytes(args.input.name, data, args.format, limits)
+    result = analyze_packets(imported.packets, limits=limits)
     result["source"] = {
         "name": args.input.name,
         "format": imported.format,

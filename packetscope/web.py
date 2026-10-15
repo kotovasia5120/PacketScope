@@ -51,6 +51,9 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds size limit"})
             return
         body = self.rfile.read(content_length)
+        if len(body) != content_length:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
+            return
         try:
             name, format_name, payload = _multipart_file(self.headers.get("Content-Type", ""), body)
             imported = import_bytes(name, payload, format_name, self.server.limits)  # type: ignore[attr-defined]
@@ -83,6 +86,9 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         content = candidate.read_bytes()
+        if len(content) > self.server.limits.max_response_bytes:  # type: ignore[attr-defined]
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "response exceeds configured limit"})
+            return
         content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
@@ -93,7 +99,7 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
     def _json(self, status: HTTPStatus, value: dict) -> None:
         payload = dumps_result(value).encode("utf-8")
         if len(payload) > self.server.limits.max_response_bytes:  # type: ignore[attr-defined]
-            payload = b'{"error":"response exceeds configured limit"}'
+            payload = b"{}"
             status = HTTPStatus.INTERNAL_SERVER_ERROR
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
