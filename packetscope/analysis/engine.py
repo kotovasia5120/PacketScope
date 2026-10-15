@@ -233,8 +233,14 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
             break
         prefix += 1
     if prefix >= 2:
+        # Report the smallest conventional magic candidate as well as the
+        # full repeated prefix; a message type or high counter byte can share
+        # the prefix and must remain an explicit alternative.
+        magic_width = 2
+        add(_make_field("magic_bytes", views, 0, magic_width, "big", views[0].data[:magic_width].hex(), 0.63, f"all {len(views)} application samples share prefix {views[0].data[:magic_width].hex()}", [], ["framing", "version", "ordinary constant", "longer constant prefix"], "A repeated prefix may be framing, a version, or an ordinary constant."))
         width = min(prefix, 8)
-        add(_make_field("magic_bytes", views, 0, width, "big", views[0].data[:width].hex(), 0.63, f"all {len(views)} application samples share prefix {views[0].data[:width].hex()}", [], ["framing", "version", "ordinary constant"], "A repeated prefix may be framing, a version, or an ordinary constant."))
+        if width != magic_width:
+            add(_make_field("magic_bytes", views, 0, width, "big", views[0].data[:width].hex(), 0.58, f"all {len(views)} application samples share longer prefix {views[0].data[:width].hex()}", [], ["framing plus message type", "version", "ordinary constant"], "The detector cannot separate adjacent constant fields without more messages."))
 
     suffix = 0
     for offset in range(1, aligned + 1):
