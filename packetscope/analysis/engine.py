@@ -364,20 +364,23 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
     for offset in range(max_offset):
         if cancel and cancel():
             return findings
-        candidates: list[tuple[int, str, list[int], int]] = []
+        candidates: list[tuple[int, str, list[int], int, str]] = []
         for width in widths:
             if offset + width > aligned:
                 continue
             for endian in endians:
                 values = [int.from_bytes(view.data[offset:offset + width], endian) for view in views]
                 modulus = 1 << (width * 8)
-                deltas = {(right - left) % modulus for left, right in zip(values, values[1:])}
-                # This detector deliberately reports only a unit-step counter.
-                # Non-unit progressions are not rejected as impossible; they
-                # remain an explicit limitation until independent samples can
-                # distinguish a counter from an encoded value.
-                if len(set(values)) > 1 and deltas == {1}:
-                    candidates.append((width, endian, values, 1))
+                deltas = [(right - left) % modulus for left, right in zip(values, values[1:])]
+                unique_deltas = set(deltas)
+                if len(set(values)) <= 1 or not deltas:
+                    continue
+                if len(unique_deltas) == 1 and 1 <= deltas[0] <= 32:
+                    candidates.append((width, endian, values, deltas[0], "constant_step"))
+                    continue
+                gap_count = sum(delta != 1 for delta in deltas)
+                if gap_count and gap_count <= max(1, len(deltas) // 4) and all(1 <= delta <= 32 for delta in deltas):
+                    candidates.append((width, endian, values, 1, "unit_step_with_gaps"))
         if candidates:
             # Prefer the widest consistent interpretation. A low byte of a
             # wider counter is a viable projection, but emitting every nested
@@ -385,13 +388,21 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
             widest = max(item[0] for item in candidates)
             selected = [item for item in candidates if item[0] == widest]
             seen_values: set[tuple[int, ...]] = set()
-            for width, endian, values, step in selected:
+            for width, endian, values, step, progression_kind in selected:
                 value_key = tuple(values)
                 if value_key in seen_values:
                     continue
                 seen_values.add(value_key)
                 sequence_offsets.add(offset)
-                add(_make_field("sequence_counter", views, offset, width, endian, values, 0.71, f"{endian}-endian values advance by one in packet order: {values[:32]}", [], ["timestamp", "index", "monotonic application value"], "Packet order is evidence; retransmission, sorting, direction changes, or a projected subfield can alter this interpretation."))
+                if progression_kind == "constant_step":
+                    rationale = f"{endian}-endian values advance by a constant step of {step} in packet order: {values[:32]}"
+                    confidence = 0.71 if step == 1 else 0.59
+                    caveat = "A non-unit progression may be a counter with gaps, a scaled value, or an encoded parameter; packet order remains an assumption."
+                else:
+                    rationale = f"{endian}-endian values mostly advance by one with bounded gaps in packet order: {values[:32]}"
+                    confidence = 0.56
+                    caveat = "Observed gaps may be dropped messages, batching, retransmission, or an encoded value; more ordered samples are needed."
+                add(_make_field("sequence_counter", views, offset, width, endian, values, confidence, rationale, [], ["timestamp", "index", "monotonic application value", "message loss"], caveat))
         if len(findings) >= limits.max_hypotheses:
             return findings
 

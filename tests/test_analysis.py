@@ -43,6 +43,19 @@ class AnalysisTests(unittest.TestCase):
         result = analyze_packets(packets, limits=Limits(max_hypotheses=1))
         self.assertLessEqual(len(result["hypotheses"]), 1)
 
+    def test_non_unit_and_gap_progressions_remain_explicit_hypotheses(self):
+        stepped = [Packet(index, b"\xaa\xbb" + value.to_bytes(2, "big") + b"\x10") for index, value in enumerate((0, 5, 10, 15))]
+        stepped_result = analyze_packets(stepped)
+        stepped_candidates = [item for item in stepped_result["hypotheses"] if item["field_type"] == "sequence_counter"]
+        self.assertTrue(any("constant step of 5" in item["evidence"][0]["rationale"] for item in stepped_candidates))
+        self.assertTrue(any("non-unit progression" in caveat for item in stepped_candidates for caveat in item["caveats"]))
+
+        gapped = [Packet(index, b"\xaa\xbb" + value.to_bytes(2, "big") + b"\x10") for index, value in enumerate((0, 1, 3, 4))]
+        gapped_result = analyze_packets(gapped)
+        gapped_candidates = [item for item in gapped_result["hypotheses"] if item["field_type"] == "sequence_counter"]
+        self.assertTrue(any("bounded gaps" in item["evidence"][0]["rationale"] for item in gapped_candidates))
+        self.assertTrue(any("gaps" in caveat for item in gapped_candidates for caveat in item["caveats"]))
+
 
 if __name__ == "__main__":
     unittest.main()
