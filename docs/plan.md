@@ -118,3 +118,56 @@ Implemented locally in the current working tree:
 
 Docker and a hosted CI run on the final release commit remain release gates;
 see [`docs/phase7-progress.md`](phase7-progress.md).
+
+## Continuation plan — reliability and investigation workspace
+
+This is the actionable plan for the post-Phase-7 continuation. Work is
+ordered by user impact and each item is complete only when its acceptance
+criteria and regression checks are present.
+
+### P0 — correctness and safe deployment
+
+- **Coordinate contract:** every offset-bearing field declares either
+  `raw_packet` or `application_payload`; Python schema application and the
+  browser use the same transform and return unavailable rather than partial
+  values. Acceptance: Ethernet/IPv4/TCP/UDP and raw BIN fixtures highlight and
+  apply at identical byte ranges in both views.
+- **Lossless scalars:** UINT32, UINT64, and INT64 values are represented as
+  JSON-safe decimal strings when needed, with explicit encoding metadata.
+  Acceptance: zero, maximum, signed boundary, and both endian orders match
+  between Python and JavaScript without `Number.parseInt` precision loss.
+- **Deployment truthfulness:** local/private and public-demo modes disclose
+  different data handling, and public health/UI text never claims uploads stay
+  local. Acceptance: HTTP tests cover both modes and malformed/oversized/slow
+  requests do not echo payloads or exhaust the bounded worker.
+- **Release consistency:** package, server, upload, retained-job, and report
+  metadata agree on version and limits. Acceptance: configuration, wheel, HTTP
+  smoke, and adversarial-input tests pass.
+
+### P1 — explainable comparison and investigation UX
+
+- Add a bounded baseline-versus-controlled-change comparison that reports
+  correlated byte ranges, group/distribution changes, evidence, contradictions,
+  and suggested follow-up experiments without claiming causation.
+- Improve non-unit counter and length-convention evidence while retaining
+  competing interpretations; add held-out synthetic metrics and runtime/memory
+  budget assertions.
+- Keep packet, field, and evidence selection synchronized; add keyboard and
+  bounded virtualized navigation checks for large packets and stale-scope
+  responses.
+
+### P2 — protocol interoperability and transport coverage
+
+- Add explicit reviewed-field exports for Kaitai Struct, Wireshark Lua, and a
+  deterministic machine-readable report. Generated definitions remain data-only
+  and are never executed by PacketScope.
+- Add bounded TCP stream reconstruction as a transport layer with sequence,
+  retransmission, overlap, missing-data, and ambiguity records, keeping
+  application framing separate.
+
+### Verification gates
+
+After every thematic change run `make test`, then run the applicable Node
+syntax/E2E and evaluation commands. Docker build/offline container tests and a
+hosted GitHub Actions run remain **UNVERIFIED** until an environment with those
+capabilities performs them; no local source-only result may promote either gate.
