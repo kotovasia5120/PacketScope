@@ -97,22 +97,30 @@ See [`docs/architecture.md`](docs/architecture.md) and
 
 ## Verification record
 
-The pre-Phase-4 baseline `HEAD` was `57f44270bce993f6c8b52d97cf66d54bab00ffee`,
-matching the verified commit for the recorded GitHub Actions run
-`38736191414`. That run completed successfully for both `tests` and `docker`.
-The Phase-4 changes below are new work and must receive a new CI run; the
-baseline PASS is not attributed to this changed tree.
+The pre-Phase-4 baseline and its CI result are retained for historical context
+only. Results below are for the Phase-5 working tree and are not attributed to
+that older run.
 
 | Command or gate | Result |
 | --- | --- |
-| `python -m unittest discover -s tests -p 'test_*.py' -v` | **PASS** — 40 tests in the local development environment |
-| `make test` | **PASS for the pre-Phase-4 baseline in the pinned CI/Docker environment; rerun required for this tree** |
-| `python -m compileall -q packetscope tests` | **PASS** |
-| `node --check packetscope/static/app.js` | **PASS** |
-| `docker run --rm --network none packetscope:local make test` | **PASS for the pre-Phase-4 baseline; rerun required for this tree** |
-| GitHub Actions run `38736191414` at `57f4427` | **PASS** — `tests` and `docker` jobs for the baseline commit |
+| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 62 tests on Python 3.12.7 |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | **PASS** — 62 tests on host Python 3.11.2 compatibility check |
+| `python3 -m compileall -q packetscope tests` | **PASS** |
+| `node --check packetscope/static/app.js` plus E2E JS files | **PASS** |
+| `npm run e2e` with pinned Chromium 131 / Python 3.12.7 server | **PASS** — 4 browser tests |
+| HTTP `/api/health` smoke test | **PASS** — real local server |
+| `make test` with default host `python3` | **BLOCKED** — host is 3.11.2; exact pinned runtime command above passes |
+| Docker build/offline container | **BLOCKED** — Docker daemon is unavailable in this environment |
+| New GitHub Actions run | **UNVERIFIED** — no push was authorized |
 
 The mandatory tests are offline and use only deterministic synthetic fixtures. CRC reference values and parameters are documented in [`docs/crc.md`](docs/crc.md).
+
+The independent holdout corpus is not available to the analyzer at runtime.
+Measured post-analysis evaluation (heuristic detector metrics, not
+probabilities) is: A precision 0.400 / recall 1.000 / F1 0.571; B precision
+0.429 / recall 1.000 / F1 0.600; C and D have no applicable recall; the
+independent holdout has precision 0.222 / recall 0.667 / F1 0.333. These
+figures expose false positives rather than hiding them.
 
 ## Browser E2E
 
