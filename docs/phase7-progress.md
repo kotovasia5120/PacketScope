@@ -171,7 +171,7 @@ without treating the earlier release-candidate snapshot as the final state.
 | Node syntax and schema-value tests | **PASS** — `node --check` plus 2 Node tests |
 | Phase 6 evaluation | **PASS** — holdout precision 0.375 / recall 1.000 / F1 0.545 |
 | Phase 7 generalization evaluation | **PASS** — deterministic report generated; metrics remain heuristic |
-| Playwright E2E | **NOT RUN** — `node_modules`/Chromium are not installed in this checkout |
+| Playwright E2E | **PASS** — 5 real Chromium tests after local `npm ci` and pinned browser install |
 | Docker build/offline container | **BLOCKED** — Docker daemon unavailable |
 | Hosted GitHub Actions | **UNVERIFIED** — no push or hosted run was authorized |
 
