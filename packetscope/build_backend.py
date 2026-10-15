@@ -12,6 +12,7 @@ import hashlib
 import os
 from pathlib import Path
 import sys
+import time
 import zipfile
 
 
@@ -29,7 +30,7 @@ def _metadata() -> dict[str, str]:
                 f"Name: {NAME}",
                 f"Version: {VERSION}",
                 "Summary: A local, explainable binary protocol reverse-engineering workbench.",
-                "Requires-Python: >=3.12,<3.13",
+                "Requires-Python: ==3.12.7",
                 "License: MIT",
                 "Author: PacketScope contributors",
                 "",
@@ -61,7 +62,18 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None) 
     filename = f"{NAME}-{VERSION}-py3-none-any.whl"
     destination = Path(wheel_directory) / filename
     records: list[str] = []
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as wheel:
+    source_date_epoch = max(int(os.environ.get("SOURCE_DATE_EPOCH", "315532800")), 315532800)
+    source_date = time.gmtime(source_date_epoch)
+    timestamp = (source_date.tm_year, source_date.tm_mon, source_date.tm_mday, source_date.tm_hour, source_date.tm_min, source_date.tm_sec)
+
+    def write_entry(wheel: zipfile.ZipFile, archive_name: str, data: bytes) -> None:
+        info = zipfile.ZipInfo(archive_name, date_time=timestamp)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.create_system = 3
+        info.external_attr = 0o644 << 16
+        wheel.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=False) as wheel:
         files = sorted(
             path
             for path in (ROOT / NAME).rglob("*")
@@ -70,18 +82,18 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None) 
         for path in files:
             archive_name = path.relative_to(ROOT).as_posix()
             data = path.read_bytes()
-            wheel.writestr(archive_name, data)
+            write_entry(wheel, archive_name, data)
             digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
             records.append(f"{archive_name},sha256={digest},{len(data)}")
         metadata = _metadata()
         for metadata_name, content in metadata.items():
             archive_name = f"{DIST_INFO}/{metadata_name}"
             data = content.encode("utf-8")
-            wheel.writestr(archive_name, data)
+            write_entry(wheel, archive_name, data)
             digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
             records.append(f"{archive_name},sha256={digest},{len(data)}")
         records.append(f"{DIST_INFO}/RECORD,,")
-        wheel.writestr(f"{DIST_INFO}/RECORD", "\n".join(records) + "\n")
+        write_entry(wheel, f"{DIST_INFO}/RECORD", ("\n".join(records) + "\n").encode("utf-8"))
     return filename
 
 

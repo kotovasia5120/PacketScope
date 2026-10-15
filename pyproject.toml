@@ -8,7 +8,7 @@ name = "packetscope"
 version = "0.1.0"
 description = "A local, explainable binary protocol reverse-engineering workbench."
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = "==3.12.7"
 license = { text = "MIT" }
 authors = [{ name = "PacketScope contributors" }]
 dependencies = []

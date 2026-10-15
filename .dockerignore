@@ -1,6 +1,13 @@
 .git
 .gitignore
 .venv
+.env
+.runtime
+node_modules
+test-artifacts
+.omnirush
+dist
+build
 __pycache__
 *.py[cod]
 .pytest_cache
@@ -9,3 +16,4 @@ __pycache__
 *.bin
 *.hex
 results
+!tests/fixtures/phase6_multiflow.pcap
