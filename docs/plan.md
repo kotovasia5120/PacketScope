@@ -11,18 +11,20 @@
 
 **Completion criteria:** a synthetic capture can be uploaded in the browser,
 inspected, annotated, and exported without network access; malformed and
-oversized inputs return bounded errors; `make test` passes.
+oversized inputs return bounded errors; `make test` passes under Python 3.12.7.
 
 ## P1 — stronger protocol investigation
 
 - Add packet grouping and direction-aware views.
 - Add field-width/endian alternatives and checksum range explanations.
-- Add PCAP link-layer decoding for common Ethernet/IP/UDP/TCP payloads.
+- Analyze decoded protocol fields as context without promoting them to facts.
+- Add CRC-family and checksum-range analysis with synthetic ground truth.
 - Add saved local workspaces and import/export of annotation sets.
 
 **Completion criteria:** a user can compare multiple message groups and trace
-each candidate to source packets and byte ranges, with regression fixtures for
-each supported link type.
+each candidate to source packets and byte ranges; protocol-field context and
+CRC candidates remain hypotheses with deterministic evidence and regression
+fixtures. This phase is planned only; it has not started in the P0 work.
 
 ## P2 — scale and collaboration ergonomics
 

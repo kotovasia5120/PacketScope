@@ -12,6 +12,9 @@ BIN / HEX / PCAP / PCAPNG
   immutable Packet records
           |
           v
+  bounded protocol metadata decoder
+          |
+          v
  deterministic observations
           |
           v
@@ -27,6 +30,10 @@ BIN / HEX / PCAP / PCAPNG
   not decide what a field means.
 - `packetscope/analysis/` compares aligned bytes and emits cautious,
   evidence-backed hypotheses. It never mutates source data.
+- `packetscope/protocols.py` decodes bounded Ethernet, IPv4/IPv6, TCP, and UDP
+  header metadata. It reports truncation and fragmentation and does not
+  reassemble packets. Unknown link types remain raw and are marked
+  `unsupported_link_type`.
 - `packetscope/export.py` owns the stable JSON shape and annotation merge.
 - `packetscope/web.py` exposes only local, bounded HTTP operations and serves
   static assets.
@@ -38,7 +45,9 @@ planned extensions, not hidden behavior.
 
 ## Safety model
 
-Uploads are bounded before parsing. PCAP and PCAPNG length fields are checked
-against the bounded source. Packet bytes are treated only as data. Results say
+Uploads and direct analysis iterables are bounded before parsing or
+materialization. PCAP and PCAPNG length fields are checked against the bounded
+source, including block trailers and section/interface state. Packet bytes are
+treated only as data. Results say
 `candidate` or `hypothesis` and include a confidence plus evidence; users can
 add manual annotations that remain distinct from automatic findings.

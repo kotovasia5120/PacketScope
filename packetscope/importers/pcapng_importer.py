@@ -93,11 +93,14 @@ def _validate_block(data: bytes, offset: int, total: int, endian: str, limits: L
 def _timestamp_resolution(data: bytes, start: int, end: int, endian: str) -> float:
     """Read IDB if_tsresol, defaulting to the PCAPNG microsecond resolution."""
     offset = start
+    resolution = 1_000_000.0
     while offset + 4 <= end:
         code, length = struct.unpack_from(endian + "HH", data, offset)
         offset += 4
         if code == 0:
-            return 1_000_000.0
+            if length != 0:
+                raise FormatError("PCAPNG end-of-options marker has a nonzero length")
+            return resolution
         if offset + length > end:
             raise FormatError("PCAPNG interface option is truncated")
         value = data[offset : offset + length]
@@ -108,8 +111,10 @@ def _timestamp_resolution(data: bytes, start: int, end: int, endian: str) -> flo
             if length != 1:
                 raise FormatError("PCAPNG timestamp resolution option must contain one byte")
             raw = value[0]
-            return float(2**(raw & 0x7F) if raw & 0x80 else 10**raw)
-    return 1_000_000.0
+            resolution = float(2**(raw & 0x7F) if raw & 0x80 else 10**raw)
+    if offset != end:
+        raise FormatError("PCAPNG interface options are not four-byte aligned")
+    return resolution
 
 
 def _append_packet(

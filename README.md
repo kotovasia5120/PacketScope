@@ -18,6 +18,8 @@ cloud AI or external APIs.
 - Cautious candidates for magic bytes, counters, length fields, and checksums.
 - Manual field annotations and versioned JSON export.
 - Bounded uploads and no telemetry, cloud AI, or execution of packet contents.
+- Basic Ethernet, IPv4/IPv6, TCP, and UDP metadata decoding without fragment
+  reassembly; unsupported link types remain raw and explicitly unsupported.
 
 ## Quick start
 
@@ -47,6 +49,11 @@ The image runs the offline test suite during `docker build`. Use
 `--network none` when running it to verify the application makes no network
 requests.
 
+Offline test and HTTP demonstration are separate operations. The container
+listens on `0.0.0.0` so port forwarding works, while the documented host
+mapping binds only `127.0.0.1`. Do not publish the port to a wider interface
+unless that exposure is intentional.
+
 ## CLI
 
 ```bash
@@ -72,13 +79,28 @@ check:
 
 | Command | Result |
 | --- | --- |
-| `make test` | **PASS** — 8 tests, including BIN/HEX/PCAP/PCAPNG, analysis, and HTTP upload limits |
+| `python3 -m unittest discover -s tests -p 'test_*.py' -v` | **PASS** — 21 tests under the available Python 3.11.2 (useful functional evidence, but not the pinned runtime) |
+| `make test` | **BLOCKED** — correctly refused Python 3.11.2; the project requires exactly Python 3.12.7 |
 | `python3 -m compileall -q packetscope tests` | **PASS** |
-| `docker build -t packetscope:local .` | **NOT RUN** — Docker CLI is unavailable in the build environment |
+| `python3 -m pip wheel --no-deps --no-build-isolation . --wheel-dir /tmp/packetscope-wheel` | **BLOCKED** — the available Python 3.11.2 is outside the declared 3.12 range |
+| `docker version` | **BLOCKED** — Docker CLI is unavailable in the build environment |
+| `docker build -t packetscope:local .` | **UNVERIFIED** — not executed; no Docker CLI was available |
+| `.github/workflows/ci.yml` Docker build/offline test | **UNVERIFIED** — workflow added, but no GitHub Actions run result is available from this checkout |
 
-The Docker build must be run on a clean Linux host before submission to verify
-the pinned Python 3.12.7 image as well as the offline test step in the
-Dockerfile.
+Commits containing the P0 work:
+
+| Commit | Change |
+| --- | --- |
+| `9972dab` | Enforce Python 3.12.7 in Makefile, add dependency-free build backend, Docker checks, and CI workflow |
+| `676b855` | Harden PCAP/PCAPNG parsing, add bounded analysis, HTTP failure handling, protocol decoding, and 21-test coverage |
+
+The Docker build must still be run on a clean Linux host or GitHub Actions
+before Docker can be marked **PASS**. The CI workflow deliberately records the
+offline container test separately from the port-forwarded HTTP smoke test.
+
+Independent corpus licensing and hashes are recorded in
+[`docs/reference-corpora.md`](docs/reference-corpora.md); no external fixture
+is part of the mandatory offline suite.
 
 ## License
 

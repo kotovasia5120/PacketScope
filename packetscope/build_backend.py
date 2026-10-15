@@ -90,6 +90,16 @@ def _check() -> None:
         raise SystemExit(f"PacketScope requires Python 3.12.x; found {sys.version.split()[0]}")
     if sys.version_info[:3] != (3, 12, 7):
         raise SystemExit(f"PacketScope reproducible image requires Python 3.12.7; found {sys.version.split()[0]}")
+    lock = ROOT / "requirements.lock"
+    if not lock.is_file():
+        raise SystemExit("requirements.lock is missing")
+    undeclared = [
+        line.strip()
+        for line in lock.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if undeclared:
+        raise SystemExit(f"unexpected unlocked dependencies: {undeclared!r}")
 
 
 if __name__ == "__main__":
