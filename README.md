@@ -60,7 +60,12 @@ unless that exposure is intentional.
 ```bash
 python3 -m packetscope.cli analyze sample.bin --format auto --pretty
 python3 -m packetscope.cli serve --host 127.0.0.1 --port 8765
+python3 -m packetscope.cli evaluate result.json ground-truth.json --pretty
 ```
+
+`evaluate` is intentionally a separate post-analysis step: it compares exported
+hypotheses against a truth file without exposing the truth during analysis and
+reports accuracy, missing fields, and false positives.
 
 All JSON findings include evidence and caveats. A field is never described as
 confirmed merely because a heuristic matched.

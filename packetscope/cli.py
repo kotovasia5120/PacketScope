@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from packetscope.analysis import analyze_packets
 from packetscope.errors import InputLimitError
+from packetscope.evaluation import evaluate_result
 from packetscope.export import dumps_result
 from packetscope.importers import import_bytes
 from packetscope.models import Limits
@@ -21,6 +23,10 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--pretty", action="store_true")
     analyze.add_argument("--raw", action="store_true", help="analyze raw packet bytes instead of decoded application payloads")
     analyze.add_argument("--output", type=Path)
+    evaluate = subparsers.add_parser("evaluate", help="compare an exported result with a separate truth JSON file")
+    evaluate.add_argument("result", type=Path)
+    evaluate.add_argument("truth", type=Path)
+    evaluate.add_argument("--pretty", action="store_true")
     server = subparsers.add_parser("serve", help="start the local browser server")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8765)
@@ -31,6 +37,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "serve":
         serve(args.host, args.port)
+        return 0
+    if args.command == "evaluate":
+        result = json.loads(args.result.read_text(encoding="utf-8"))
+        truth = json.loads(args.truth.read_text(encoding="utf-8"))
+        expected = truth.get("expected", truth) if isinstance(truth, dict) else truth
+        sys.stdout.write(dumps_result(evaluate_result(result, expected), args.pretty) + "\n")
         return 0
     limits = Limits()
     file_size = args.input.stat().st_size
