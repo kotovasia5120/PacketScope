@@ -1,12 +1,15 @@
 import json
 import socket
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
 import uuid
 
 from packetscope.models import Limits
+from packetscope.importers.base import import_bytes
+from packetscope.jobs import AnalysisManager
 from packetscope.web import PacketScopeServer
 
 
@@ -92,6 +95,88 @@ class WebIntegrationTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.request("/api/health")
         self.assertEqual(context.exception.code, 500)
+
+    def test_job_reads_are_repeatable_and_terminal_delete_is_conflict(self):
+        body, content_type = multipart(b"job")
+        with self.request("/api/jobs", "POST", body, content_type) as response:
+            queued = json.load(response)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with self.request(f"/api/jobs/{queued['job_id']}") as response:
+                status = json.load(response)
+            if status["status"] in {"COMPLETE", "FAILED", "CANCELLED"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(status["status"], "COMPLETE")
+        with self.request(f"/api/jobs/{queued['job_id']}") as response:
+            repeated = json.load(response)
+        self.assertEqual(repeated, status)
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(f"/api/jobs/{queued['job_id']}", "DELETE")
+        self.assertEqual(context.exception.code, 409)
+
+    def test_job_delete_cancels_analysis_and_unknown_is_not_found(self):
+        started = threading.Event()
+
+        def analyzer(packets, *, cancel, **kwargs):
+            started.set()
+            while not cancel():
+                time.sleep(0.002)
+            return {"status": "CANCELLED", "warnings": []}
+
+        self.server.analysis_manager.close()
+        self.server.analysis_manager = AnalysisManager(
+            self.server.limits,
+            importer=import_bytes,
+            analyzer=analyzer,
+        )
+        body, content_type = multipart(b"job")
+        with self.request("/api/jobs", "POST", body, content_type) as response:
+            queued = json.load(response)
+        self.assertTrue(started.wait(1))
+        with self.request(f"/api/jobs/{queued['job_id']}", "DELETE") as response:
+            cancelled = json.load(response)
+        self.assertEqual(cancelled["cancelled"], True)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with self.request(f"/api/jobs/{queued['job_id']}") as response:
+                status = json.load(response)
+            if status["status"] == "CANCELLED":
+                break
+            time.sleep(0.01)
+        self.assertEqual(status["status"], "CANCELLED")
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/jobs/does-not-exist", "DELETE")
+        self.assertEqual(context.exception.code, 404)
+
+    def test_job_queue_overflow_returns_service_unavailable(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def analyzer(packets, **kwargs):
+            started.set()
+            release.wait(1)
+            return {"warnings": []}
+
+        self.server.analysis_manager.close()
+        self.server.analysis_manager = AnalysisManager(
+            self.server.limits,
+            max_queue=1,
+            importer=import_bytes,
+            analyzer=analyzer,
+        )
+        body, content_type = multipart(b"job")
+        try:
+            with self.request("/api/jobs", "POST", body, content_type) as response:
+                self.assertEqual(response.status, 202)
+            self.assertTrue(started.wait(1))
+            with self.request("/api/jobs", "POST", body, content_type) as response:
+                self.assertEqual(response.status, 202)
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self.request("/api/jobs", "POST", body, content_type)
+            self.assertEqual(context.exception.code, 503)
+        finally:
+            release.set()
 
 
 if __name__ == "__main__":

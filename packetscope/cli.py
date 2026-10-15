@@ -22,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--format", choices=("auto", "bin", "hex", "pcap", "pcapng"), default="auto")
     analyze.add_argument("--pretty", action="store_true")
     analyze.add_argument("--raw", action="store_true", help="analyze raw packet bytes instead of decoded application payloads")
+    analyze.add_argument("--direction", choices=("both", "forward", "reverse"), default="both",
+                         help="limit analysis to one normalized flow direction")
     analyze.add_argument("--output", type=Path)
     evaluate = subparsers.add_parser("evaluate", help="compare an exported result with a separate truth JSON file")
     evaluate.add_argument("result", type=Path)
@@ -56,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
             f"input is {len(data)} bytes; limit is {limits.max_input_bytes}"
         )
     imported = import_bytes(args.input.name, data, args.format, limits)
-    result = analyze_packets(imported.packets, limits=limits, analyze_raw=args.raw)
+    result = analyze_packets(imported.packets, limits=limits, analyze_raw=args.raw,
+                             selected_direction=args.direction)
     result["source"] = {
         "name": args.input.name,
         "format": imported.format,

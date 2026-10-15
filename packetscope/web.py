@@ -113,8 +113,16 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         if self.path.startswith("/api/jobs/"):
             job_id = self.path.removeprefix("/api/jobs/").split("/", 1)[0]
-            cancelled = self.server.analysis_manager.cancel(job_id)  # type: ignore[attr-defined]
-            self._json(HTTPStatus.OK if cancelled else HTTPStatus.NOT_FOUND, {"job_id": job_id, "cancelled": cancelled})
+            cancelled, current_status = self.server.analysis_manager.cancel_with_status(job_id)  # type: ignore[attr-defined]
+            if current_status is None:
+                self._json(HTTPStatus.NOT_FOUND, {"job_id": job_id, "cancelled": False})
+            elif cancelled:
+                self._json(HTTPStatus.OK, {"job_id": job_id, "cancelled": True, "status": current_status})
+            else:
+                # The job is known but has already reached a terminal state;
+                # distinguish that from an unknown job instead of reporting
+                # a misleading 404.
+                self._json(HTTPStatus.CONFLICT, {"job_id": job_id, "cancelled": False, "status": current_status})
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -132,6 +140,9 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self.rfile.read(content_length)
+            if len(body) != content_length:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
+                return
             name, format_name, payload, analyze_raw = _multipart_file(self.headers.get("Content-Type", ""), body)
             job = self.server.analysis_manager.submit(name, format_name, payload, analyze_raw)  # type: ignore[attr-defined]
             self._json(HTTPStatus.ACCEPTED, {"job_id": job.job_id, "status": job.status, "progress": job.progress})

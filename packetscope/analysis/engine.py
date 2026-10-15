@@ -8,6 +8,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Callable, Iterable
 
 from packetscope.errors import InputLimitError
+from packetscope.flows import group_flows, select_flow_packets
 from packetscope.models import FieldHypothesis, Limits, Packet
 from packetscope.protocols import decode_packet
 from .crc import SearchBudget, discover_checksums
@@ -31,6 +32,8 @@ def analyze_packets(
     analyze_raw: bool = False,
     cancel: Callable[[], bool] | None = None,
     progress: Callable[[int], None] | None = None,
+    selected_direction: str | None = None,
+    flow_id: str | None = None,
 ) -> dict:
     limits = limits or Limits()
     packet_list: list[Packet] = []
@@ -45,12 +48,22 @@ def analyze_packets(
         if progress:
             progress(len(packet_list))
 
-    lengths = [len(packet.payload) for packet in packet_list]
+    flows = group_flows(packet_list, limits=limits)
+    selected_packets = select_flow_packets(
+        packet_list,
+        selected_direction=selected_direction,
+        flow_id=flow_id,
+        limits=limits,
+    )
+    analyzing_selection = selected_direction not in (None, "", "both", "all") or flow_id is not None
+    analysis_packet_list = selected_packets if analyzing_selection else packet_list
+    lengths = [len(packet.payload) for packet in analysis_packet_list]
     observation_limit = max(1, limits.max_response_bytes // 128)
-    views, contexts = _analysis_views(packet_list, analyze_raw)
+    views, contexts = _analysis_views(analysis_packet_list, analyze_raw)
     data_lengths = [len(view.data) for view in views]
     observations: dict[str, Any] = {
         "packet_count": len(packet_list),
+        "analysis_packet_count": len(analysis_packet_list),
         "lengths": lengths[:observation_limit],
         "min_length": min(lengths) if lengths else 0,
         "max_length": max(lengths) if lengths else 0,
@@ -81,7 +94,8 @@ def analyze_packets(
     packet_budget = max(0, limits.max_response_bytes // 3)
     packet_json: list[dict] = []
     packet_bytes = 0
-    for packet in packet_list:
+    output_packets = analysis_packet_list if analyzing_selection else packet_list
+    for packet in output_packets:
         item = _packet_json(packet, max(0, packet_budget - packet_bytes))
         estimated = len(str(item).encode("utf-8"))
         if packet_json and packet_bytes + estimated > packet_budget:
@@ -92,12 +106,29 @@ def analyze_packets(
     warnings = [context["limitation"] for context in contexts if context.get("limitation")]
     if crc_status not in {"NOT_RUN", "COMPLETE"}:
         warnings.append(f"checksum discovery stopped with status {crc_status}")
+    flow_json: list[dict] = []
+    flow_bytes = 0
+    flow_budget = max(0, limits.max_response_bytes // 3)
+    for flow in flows:
+        item = flow.as_dict()
+        estimated = len(str(item).encode("utf-8"))
+        if flow_json and flow_bytes + estimated > flow_budget:
+            break
+        flow_json.append(item)
+        flow_bytes += estimated
     return {
         "schema_version": 2,
         "tool": {"name": "PacketScope", "version": "0.2.0"},
         "source": {"format": "normalized", "packet_count": len(packet_list)},
         "packets": packet_json,
-        "packets_truncated": len(packet_json) != len(packet_list),
+        "packets_truncated": len(packet_json) != len(output_packets),
+        "flows": flow_json,
+        "flows_truncated": len(flow_json) != len(flows),
+        "flow_selection": {
+            "flow_id": flow_id,
+            "direction": selected_direction or "both",
+            "applied": analyzing_selection,
+        },
         "analysis": {
             "status": analysis_status,
             "scope": "raw_packet" if analyze_raw else "application_payload",

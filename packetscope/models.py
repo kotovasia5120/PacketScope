@@ -15,6 +15,7 @@ class Limits:
     max_analysis_seconds: float = 2.0
     max_crc_candidates: int = 4000
     max_crc_ranges: int = 512
+    max_flows: int = 100_000
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -26,6 +27,7 @@ class Limits:
             ("max_response_bytes", self.max_response_bytes),
             ("max_crc_candidates", self.max_crc_candidates),
             ("max_crc_ranges", self.max_crc_ranges),
+            ("max_flows", self.max_flows),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
