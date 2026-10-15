@@ -344,21 +344,42 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
     max_offset = min(aligned, 128)
     widths = profile.integer_widths if profile else (1, 2, 4, 8)
     endians = profile.endianness_options if profile else ("big", "little")
-    for width in widths:
-        if width > aligned:
-            continue
-        for offset in range(max_offset - width + 1):
-            if cancel and cancel():
-                return findings
+    sequence_offsets: set[int] = set()
+    for offset in range(max_offset):
+        if cancel and cancel():
+            return findings
+        candidates: list[tuple[int, str, list[int], int]] = []
+        for width in widths:
+            if offset + width > aligned:
+                continue
             for endian in endians:
                 values = [int.from_bytes(view.data[offset:offset + width], endian) for view in views]
                 modulus = 1 << (width * 8)
-                if len(set(values)) > 1 and all((right - left) % modulus == 1 for left, right in zip(values, values[1:])):
-                    add(_make_field("sequence_counter", views, offset, width, endian, values, 0.71, f"{endian}-endian values advance by one in packet order: {values[:32]}", [], ["timestamp", "index", "monotonic application value"], "Packet order is evidence; retransmission, sorting, or direction changes can alter this interpretation."))
-                    break
-            if len(findings) >= limits.max_hypotheses:
-                return findings
+                deltas = {(right - left) % modulus for left, right in zip(values, values[1:])}
+                # This detector deliberately reports only a unit-step counter.
+                # Non-unit progressions are not rejected as impossible; they
+                # remain an explicit limitation until independent samples can
+                # distinguish a counter from an encoded value.
+                if len(set(values)) > 1 and deltas == {1}:
+                    candidates.append((width, endian, values, 1))
+        if candidates:
+            # Prefer the widest consistent interpretation. A low byte of a
+            # wider counter is a viable projection, but emitting every nested
+            # projection makes unrelated body bytes look like counters.
+            widest = max(item[0] for item in candidates)
+            selected = [item for item in candidates if item[0] == widest]
+            seen_values: set[tuple[int, ...]] = set()
+            for width, endian, values, step in selected:
+                value_key = tuple(values)
+                if value_key in seen_values:
+                    continue
+                seen_values.add(value_key)
+                sequence_offsets.add(offset)
+                add(_make_field("sequence_counter", views, offset, width, endian, values, 0.71, f"{endian}-endian values advance by one in packet order: {values[:32]}", [], ["timestamp", "index", "monotonic application value"], "Packet order is evidence; retransmission, sorting, direction changes, or a projected subfield can alter this interpretation."))
+        if len(findings) >= limits.max_hypotheses:
+            return findings
 
+    seen_lengths: set[tuple[int, int, tuple[int, ...], str]] = set()
     for width in widths:
         if width > aligned:
             continue
@@ -368,10 +389,12 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
                 lengths = [len(view.data) for view in views]
                 for label, expected in (("total message length", lengths), ("payload length", [length - offset - width for length in lengths]), ("bytes after field", [length - offset for length in lengths])):
                     if values == expected:
+                        dedupe_key = (offset, width, tuple(values), label)
+                        if dedupe_key in seen_lengths:
+                            break
+                        seen_lengths.add(dedupe_key)
                         add(_make_field("length_field", views, offset, width, endian, values, 0.82, f"{endian}-endian values match {label}: {values[:32]}", [], ["record length", "payload length"], "The detector cannot determine whether the field includes its own header or represents another size."))
                         break
-                if findings and findings[-1].get("field_type") == "length_field" and findings[-1].get("absolute_offset") == views[0].absolute_base + offset:
-                    break
             if len(findings) >= limits.max_hypotheses:
                 return findings
 
@@ -380,7 +403,7 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
         distinct = len(set(values))
         if 1 < distinct <= min(8, len(views)):
             counts = {value: values.count(value) for value in sorted(set(values))}
-            if max(counts.values()) >= 2:
+            if max(counts.values()) >= 2 and not _looks_like_bit_flags(values):
                 add(_make_field("message_type", views, offset, 1, "big", values, 0.52, f"byte has {distinct} recurring values with frequencies {counts}", [], ["enum", "flags", "small counter"], "A low-cardinality byte is not necessarily a message type."))
                 break
 
@@ -393,10 +416,43 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
         for bit in range(8):
             if len({(value >> bit) & 1 for value in values}) > 1:
                 varying |= 1 << bit
-        if varying and varying.bit_count() <= 4 and mask == varying:
+        if varying and varying.bit_count() <= 4 and mask == varying and offset not in sequence_offsets:
             add(_make_field("bit_flags", views, offset, 1, "big", {"mask": f"0x{varying:02x}", "values": values}, 0.48, f"only mask 0x{varying:02x} varies at this byte", [], ["message type", "packed enum", "status flags"], "A small varying bit mask can also be an encoded value."))
             break
     return findings
+
+
+def _looks_like_bit_flags(values: list[int]) -> bool:
+    mask = 0
+    for value in values:
+        mask |= value
+    varying = 0
+    for bit in range(8):
+        if len({(value >> bit) & 1 for value in values}) > 1:
+            varying |= 1 << bit
+    return bool(varying) and varying.bit_count() <= 4 and mask == varying
+
+
+def _what_would_help(field_type: str) -> list[str]:
+    return {
+        "length_field": [
+            "A message longer than 255 bytes could distinguish uint8 from uint16.",
+            "Messages with several lengths could distinguish total-message, payload-only, and bytes-after-field conventions.",
+            "A direction-separated capture could show whether the same size rule holds independently.",
+        ],
+        "sequence_counter": [
+            "More samples including a rollover, gap, duplicate, or retransmission could distinguish a counter from an accidental progression.",
+            "Direction-separated captures could clarify whether the progression is scoped to one conversation.",
+        ],
+        "message_type": [
+            "More message families with different payload structure could distinguish a type byte from flags or a small counter.",
+            "Independent request/response samples could show whether values select message layouts.",
+        ],
+        "bit_flags": [
+            "Samples that toggle bits independently, without monotonic progression, would better support a packed flag interpretation.",
+            "Repeated states across message families could distinguish flags from an enum or counter.",
+        ],
+    }.get(field_type, ["Independent samples with varied payloads could test whether this interpretation remains stable."])
 
 
 def _make_field(field_type: str, views: list[_View], relative: int, width: int, endian: str, value: Any, confidence: float, rationale: str, contradictions: list[dict], alternatives: list[str], caveat: str) -> dict:
@@ -404,7 +460,7 @@ def _make_field(field_type: str, views: list[_View], relative: int, width: int, 
     evidence = [{"packet_ids": [view.packet.index for view in views[:64]], "values": [view.data[relative:relative + width].hex() for view in views[:64]], "rationale": rationale}]
     field = FieldHypothesis(field_type, primary.packet.index, primary.absolute_base + relative, primary.payload_relative_base + relative if primary.payload_relative_base is not None else None, width * 8, endian, value, confidence, evidence, contradictions, len(views), "hypothesis", alternatives)
     result = field.as_dict()
-    result.update({"id": f"{field_type}:{primary.packet.index}:{field.absolute_offset}:{width}:{endian}", "kind": "counter" if field_type == "sequence_counter" else field_type, "offset": field.absolute_offset, "width": width, "caveats": [caveat], "locations": [{"packet_id": view.packet.index, "absolute_offset": view.absolute_base + relative, "payload_relative_offset": view.payload_relative_base + relative if view.payload_relative_base is not None else None} for view in views[:128]]})
+    result.update({"id": f"{field_type}:{primary.packet.index}:{field.absolute_offset}:{width}:{endian}", "kind": "counter" if field_type == "sequence_counter" else field_type, "offset": field.absolute_offset, "width": width, "caveats": [caveat], "what_would_help": _what_would_help(field_type), "evidence_quality": {"basis": "observed_packet_bytes", "independent_samples": len(views), "assumptions": ["packet order is meaningful"] if field_type == "sequence_counter" else []}, "locations": [{"packet_id": view.packet.index, "absolute_offset": view.absolute_base + relative, "payload_relative_offset": view.payload_relative_base + relative if view.payload_relative_base is not None else None} for view in views[:128]]})
     return result
 
 
@@ -460,7 +516,8 @@ def _rank_and_group(hypotheses: list[dict]) -> list[dict]:
         offset = item.get("absolute_offset", item.get("offset"))
         width = item.get("width", int(item.get("width_bits", 8)) // 8)
         algorithm = item.get("algorithm")
-        key = (field_type, offset, width, algorithm)
+        endian = item.get("endian")
+        key = (field_type, offset, width, endian, algorithm)
         groups.setdefault(key, []).append(item)
     for group_index, items in enumerate(groups.values(), start=1):
         group_id = f"hypothesis-group-{group_index}"
@@ -475,17 +532,83 @@ def _rank_and_group(hypotheses: list[dict]) -> list[dict]:
                     if label not in alternatives:
                         alternatives.append(label)
             item["alternative_interpretations"] = sorted(set(alternatives))
-            support = max(0, int(item.get("sample_count", 0)))
-            contradictions = len(item.get("contradictions", []))
-            complexity = 1 if item.get("algorithm") or item.get("checksum") else 0
-            item["ranking"] = {
-                "score": round(float(item.get("confidence", 0.0)) + min(0.1, support / 1000)
-                                  - contradictions * 0.05 - complexity * 0.005, 6),
-                "confidence_label": "heuristic",
-                "supporting_samples": support,
-                "contradictions": contradictions,
-                "complexity_penalty": complexity * 0.005,
+
+    # A shared byte range can support several compatible interpretations. Keep
+    # every candidate, but make the ambiguity explicit instead of letting the
+    # list order imply that one semantic meaning was proven.
+    compatible_types = {"sequence_counter", "length_field", "message_type", "bit_flags"}
+    overlap_items = [item for item in hypotheses if str(item.get("field_type")) in compatible_types]
+    parents = list(range(len(overlap_items)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for left, item in enumerate(overlap_items):
+        start = int(item.get("absolute_offset", item.get("offset", 0)))
+        width = int(item.get("width", int(item.get("width_bits", 8)) // 8))
+        end = start + width
+        for right in range(left):
+            other = overlap_items[right]
+            other_start = int(other.get("absolute_offset", other.get("offset", 0)))
+            other_end = other_start + int(other.get("width", int(other.get("width_bits", 8)) // 8))
+            if start < other_end and other_start < end:
+                union(left, right)
+    components: dict[int, list[dict]] = {}
+    for index, item in enumerate(overlap_items):
+        components.setdefault(find(index), []).append(item)
+    overlap_groups = list(components.values())
+    for index, items in enumerate(overlap_groups, start=1):
+        if len(items) < 2:
+            continue
+        group_id = f"interpretation-group-{index}"
+        member_ids = sorted(str(item.get("id", "")) for item in items)
+        widest = max(int(item.get("width", int(item.get("width_bits", 8)) // 8)) for item in items)
+        for item in items:
+            item["interpretation_group"] = {
+                "id": group_id,
+                "member_ids": member_ids,
+                "reason": "overlapping compatible field interpretations",
+                "widths_bytes": sorted({int(other.get("width", int(other.get("width_bits", 8)) // 8)) for other in items}),
+                "endianness": sorted({str(other.get("endian", "unknown")) for other in items}),
             }
+            item["alternative_interpretations"] = sorted(set(item.get("alternative_interpretations", [])) | {
+                str(other.get("field_type", other.get("kind", "field"))) for other in items if other is not item
+            })
+            item["evidence_quality"]["independently_verified"] = False
+            item["evidence_quality"]["interpretation_group"] = group_id
+            if int(item.get("width", 1)) < widest and item.get("field_type") in {"length_field", "sequence_counter"}:
+                item["evidence_quality"]["alias_of_wider_candidate"] = True
+                item.setdefault("caveats", []).append("A narrower overlapping interpretation remains viable, but a wider candidate explains more observed bytes.")
+
+    # Scores are deterministic heuristic ordering aids, not probabilities. A
+    # narrower projection is retained but ranked below a wider candidate only
+    # when both candidates explain the same observed range.
+    for item in hypotheses:
+        support = max(0, int(item.get("sample_count", 0)))
+        contradictions = len(item.get("contradictions", []))
+        complexity = 1 if item.get("algorithm") or item.get("checksum") else 0
+        score = float(item.get("confidence", 0.0)) + min(0.1, support / 1000)
+        score -= contradictions * 0.05 + complexity * 0.005
+        if item.get("evidence_quality", {}).get("alias_of_wider_candidate"):
+            score -= 0.08
+        if item.get("field_type") == "bit_flags" and any(other.get("field_type") == "sequence_counter" and other.get("absolute_offset", other.get("offset")) == item.get("absolute_offset", item.get("offset")) for other in hypotheses):
+            score -= 0.06
+        item["ranking"] = {
+            "score": round(score, 6),
+            "confidence_label": "heuristic",
+            "supporting_samples": support,
+            "contradictions": contradictions,
+            "complexity_penalty": complexity * 0.005,
+            "ranking_factors": ["sample support", "contradictions", "model complexity", "overlap/alias penalty"],
+        }
     return sorted(hypotheses, key=lambda item: (
         -float(item.get("ranking", {}).get("score", item.get("confidence", 0.0))),
         -int(item.get("sample_count", 0)), str(item.get("id", "")),

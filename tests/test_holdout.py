@@ -17,6 +17,20 @@ class HoldoutEvaluationTests(unittest.TestCase):
         self.assertIn("top_1", evaluation["top_k_metrics"])
         self.assertIn("false_positive_breakdown", evaluation)
 
+    def test_length_width_ambiguity_is_retained_and_explained(self):
+        packets = [Packet(index, payload) for index, payload in enumerate(corpus())]
+        result = analyze_packets(packets)
+        candidates = [item for item in result["hypotheses"] if item["field_type"] == "length_field" and item["absolute_offset"] == 4]
+        self.assertTrue(any(item["width_bits"] == 8 for item in candidates))
+        wide = next(item for item in candidates if item["width_bits"] == 16 and item["endian"] == "little")
+        self.assertIn("interpretation_group", wide)
+        self.assertFalse(wide["evidence_quality"]["independently_verified"])
+        self.assertTrue(any("longer than 255" in item for item in wide["what_would_help"]))
+        self.assertGreater(wide["ranking"]["score"], max(item["ranking"]["score"] for item in candidates if item["width_bits"] == 8))
+        evaluation = evaluate_result(result, TRUTH)
+        self.assertEqual(evaluation["missing"], [])
+        self.assertIn("alternative_group_aware", evaluation)
+
 
 if __name__ == "__main__":
     unittest.main()

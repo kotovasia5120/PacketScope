@@ -8,7 +8,8 @@ def evaluate_result(result: dict[str, Any], expected: Iterable[dict[str, Any]]) 
     expected_items = list(expected)
     hypotheses = sorted(
         (item for item in result.get("hypotheses", []) if isinstance(item, dict)),
-        key=lambda item: (-float(item.get("confidence", 0.0)), str(item.get("id", ""))),
+        key=lambda item: (-float(item.get("ranking", {}).get("score", item.get("confidence", 0.0))),
+                          -float(item.get("confidence", 0.0)), str(item.get("id", ""))),
     )
     used: set[int] = set()
     matched: list[dict[str, Any]] = []
@@ -53,6 +54,12 @@ def evaluate_result(result: dict[str, Any], expected: Iterable[dict[str, Any]]) 
     for index in false_positive_indices:
         label = str(hypotheses[index].get("field_type", hypotheses[index].get("kind", "unknown")))
         false_positive_breakdown[label] = false_positive_breakdown.get(label, 0) + 1
+    candidate_groups = [_alternative_group_key(item) for item in hypotheses]
+    matched_group_keys = {candidate_groups[index] for index in used}
+    group_count = len(set(candidate_groups))
+    group_false_positive_count = sum(1 for key in set(candidate_groups) if key not in matched_group_keys)
+    group_precision = len(matched_group_keys) / group_count if group_count else (1.0 if not expected_items else 0.0)
+    group_recall = len(matched_group_keys) / len(expected_items) if expected_items else None
     ranked = [dict(item, rank=index + 1) for index, item in enumerate(hypotheses)]
     return {
         "expected_count": len(expected_items),
@@ -68,6 +75,15 @@ def evaluate_result(result: dict[str, Any], expected: Iterable[dict[str, Any]]) 
         "top_k_recall": top_matches / len(expected_items) if expected_items else None,
         "top_k_metrics": top_k_metrics,
         "duplicate_aware": duplicate_aware,
+        "alternative_group_aware": {
+            "candidate_group_count": group_count,
+            "matched_group_count": len(matched_group_keys),
+            "false_positive_group_count": group_false_positive_count,
+            "precision": group_precision,
+            "recall": group_recall,
+            "f1": (2 * group_precision * group_recall / (group_precision + group_recall)) if group_recall is not None and group_precision + group_recall else (0.0 if group_recall == 0 else None),
+            "grouping_basis": "server-provided interpretation_group, equivalence_group, or exact field identity",
+        },
         "field_type_accuracy": type_matches / len(matched) if matched else None,
         "offset_accuracy": offset_matches / len(matched) if matched else None,
         "checksum_algorithm_accuracy": checksum_matches / len(matched) if matched else None,
@@ -110,6 +126,15 @@ def _matches(candidate: dict[str, Any], truth: dict[str, Any]) -> bool:
 def _duplicate_key(item: dict[str, Any]) -> tuple[Any, ...]:
     return (item.get("field_type", item.get("kind")), item.get("absolute_offset", item.get("offset")),
             item.get("width_bits", item.get("width")), item.get("endian"), item.get("algorithm"))
+
+
+def _alternative_group_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    interpretation = item.get("interpretation_group")
+    if isinstance(interpretation, dict) and interpretation.get("id"):
+        return ("interpretation", interpretation["id"])
+    if item.get("equivalence_group"):
+        return ("equivalence", item["equivalence_group"])
+    return ("exact",) + _duplicate_key(item)
 
 
 def _same_offset(expected: dict[str, Any], candidate: dict[str, Any]) -> bool:
