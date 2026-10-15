@@ -51,8 +51,9 @@ cloud AI or external APIs.
 
 ## Quick start
 
-The supported runtime is Python **3.12.7**. The repository pins it in
-`.python-version`. No third-party runtime packages are required.
+The supported runtime is Python **3.12.7** exactly. The repository pins it in
+`.python-version`, the package metadata, the build backend, the Makefile gate,
+and the Docker image. No third-party runtime packages are required.
 
 ```bash
 cp .env.example .env
@@ -63,6 +64,33 @@ make serve
 Open <http://127.0.0.1:8765>. Upload a `.bin`, `.hex`, `.pcap`, or `.pcapng`
 file. The default upload limit is 256 MiB; individual packets are limited to
 16 MiB and the capture to 100,000 packets.
+
+## Clean Linux build and installation
+
+Install Python **3.12.7** before running these commands; the repository does
+not silently substitute another interpreter. Verify the executable first:
+
+```bash
+python3.12 --version                 # must print Python 3.12.7
+python3.12 -m venv .venv
+. .venv/bin/activate
+make PYTHON=python3.12 test
+make PYTHON=python3.12 wheel
+python -m venv /tmp/packetscope-wheel-check
+/tmp/packetscope-wheel-check/bin/python -m pip install --no-index --no-deps dist/packetscope-0.1.0-py3-none-any.whl
+/tmp/packetscope-wheel-check/bin/packetscope --help
+```
+
+The wheel has no runtime dependencies. `requirements.lock` records that empty
+runtime set. The browser test dependency is separate and is pinned by
+`package.json`, `package-lock.json`, and `.nvmrc`:
+
+```bash
+nvm use                              # uses Node 22.14.0 from .nvmrc
+npm ci
+npx playwright install chromium
+npm run e2e
+```
 
 ## Docker
 
@@ -83,6 +111,12 @@ Offline test and HTTP demonstration are separate operations. The container
 listens on `0.0.0.0` so port forwarding works, while the documented host
 mapping binds only `127.0.0.1`. Do not publish the port to a wider interface
 unless that exposure is intentional.
+
+The Docker base image is pinned to the Linux x86-64 digest for
+`python:3.12.7-slim`. The initial `docker build` still needs access to the
+Docker registry and Debian package mirror unless those inputs are already
+cached by the machine; after the image exists, the test-container command is
+network-isolated.
 
 ## CLI
 
@@ -116,14 +150,15 @@ and unresolved gates are recorded in [`docs/phase7-progress.md`](docs/phase7-pro
 
 | Command or gate | Result |
 | --- | --- |
-| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — current count in [`docs/phase7-progress.md`](docs/phase7-progress.md) |
+| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 85 tests |
 | `python3 -m unittest discover -s tests -p 'test_*.py'` | **BLOCKED** — host Python 3.11.2 fails the pinned-runtime gate |
 | `node --check packetscope/static/app.js` plus E2E JS files | **PASS** |
-| `npm run e2e` with local Chromium server | **PASS** — 5 browser tests |
+| `npm run e2e` with local Chromium server | **PASS** — 5 browser tests, including schema apply and field editing |
 | HTTP `/api/health` smoke test | **PASS** — real local server |
 | `make test` with default host `python3` | **BLOCKED** — host is 3.11.2; use the explicit pinned-runtime command above |
 | Docker build/offline container | **BLOCKED** — Docker daemon is unavailable in this environment |
 | New GitHub Actions run | **UNVERIFIED** — no push was authorized |
+| Clean wheel build, install, and reproducibility | **PASS** — local build-backend test; CI repeats isolated wheel install/hash checks |
 
 The mandatory tests are offline and use only deterministic synthetic fixtures. CRC reference values and parameters are documented in [`docs/crc.md`](docs/crc.md).
 
@@ -147,20 +182,36 @@ npm run e2e
 ```
 
 The suite starts the real local server, exercises both CRC demos, navigation,
-HEX interaction, annotations, undo/redo, project export/import, and invalid
-project handling. Failure screenshots, traces, and console text are written
-under `test-artifacts/` (ignored by Git); packet contents are not written to
-the console artifact. CI installs Chromium with Linux dependencies and uploads
-those artifacts only on failure.
+HEX interaction, schema export/application, editable annotations, undo/redo,
+project export/import, and invalid project handling. Failure screenshots,
+traces, and console text are written under `test-artifacts/` (ignored by Git);
+packet contents are not written to the console artifact. CI installs Chromium
+with Linux dependencies and uploads those artifacts only on failure.
 
 ## Interactive demonstration
 
 Start the server, open the browser, and click **Load demo**. Choose two or more
 packets in **Compare**, switch between offset and bounded sequence alignment,
-inspect the field and CRC tabs, compare an interpretation group, add a manual
-annotation, export the JSON and protocol schema, and restore it with
-**Restore saved project**. Built-in **Evaluate reference** uses a server-owned
-analysis identity; arbitrary client-submitted metrics are explicitly untrusted.
+inspect the field and CRC tabs, compare an interpretation group, add and edit a
+manual annotation, export and re-apply the protocol schema, export the JSON and
+restore it with **Restore saved project**. Built-in **Evaluate reference** uses
+a server-owned analysis identity; arbitrary client-submitted metrics are
+explicitly untrusted. The timed script and screenshot paths are in
+[`docs/demo-guide.md`](docs/demo-guide.md).
+
+## Troubleshooting
+
+- **`PacketScope requires Python 3.12.7`**: select the exact interpreter and
+  pass it explicitly, for example `make PYTHON=/path/to/python3.12 test`.
+- **`pip` tries to reach the network during a wheel check**: use
+  `--no-index --no-deps`; PacketScope itself has no Python package downloads.
+- **Chromium is missing**: run `npm ci` followed by
+  `npx playwright install chromium`. Linux CI additionally uses
+  `npx playwright install --with-deps chromium`.
+- **Docker cannot connect to the daemon**: start Docker and rerun the build;
+  do not mark the Docker gates passed from a source-only test run.
+- **The browser server port is busy**: set `PACKETSCOPE_PORT` for the manual
+  server; the E2E suite uses its dedicated port from Playwright configuration.
 
 ## Phase 4 usage
 

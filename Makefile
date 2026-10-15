@@ -10,7 +10,7 @@ test: check-runtime
 	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
 
 wheel: check-runtime
-	$(PYTHON) -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
+	SOURCE_DATE_EPOCH=$${SOURCE_DATE_EPOCH:-315532800} $(PYTHON) -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
 
 serve:
 	$(PYTHON) -m packetscope.cli serve --host "$${PACKETSCOPE_HOST:-127.0.0.1}" --port "$${PACKETSCOPE_PORT:-8765}"

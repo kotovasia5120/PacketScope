@@ -98,11 +98,11 @@ distinguish competing models.
 
 | Command | Result |
 | --- | --- |
-| Pinned `make test` | **PASS** — 84 tests on Python 3.12.7 |
+| Pinned `make test` | **PASS** — 85 tests on Python 3.12.7 |
 | CRC reference vectors | **PASS** — existing `tests/test_crc.py` suite |
 | `node --check` for browser/E2E JavaScript | **PASS** |
-| Real Chromium E2E with real Python server | **PASS** — 5 tests |
-| Schema round-trip, overlap, variable-range, invalid-schema tests | **PASS** |
+| Real Chromium E2E with real Python server | **PASS** — 5 tests, including schema application and field editing |
+| Schema round-trip, overlap, variable-range, invalid-schema tests | **PASS** — manual range application also asserted |
 | Demo valid/tampered/wrong-profile/invalid evaluation tests | **PASS** |
 | External fixtures | **PASS** for existing importer-only validation; application inference remains unsupported/not claimed |
 | Docker build and offline image test | **BLOCKED** — Docker unavailable |
