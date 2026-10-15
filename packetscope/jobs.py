@@ -1,4 +1,4 @@
-"""A bounded, local-only analysis job manager.
+"""A bounded analysis job manager.
 
 The manager intentionally has one short-lived worker.  It provides a real
 server-side lifecycle without introducing a queue service or unbounded

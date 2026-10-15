@@ -39,13 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
     server = subparsers.add_parser("serve", help="start the local browser server")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8765)
+    server.add_argument("--deployment-mode", choices=("local", "public-demo"), default=None,
+                        help="privacy/deployment contract; defaults to PACKETSCOPE_DEPLOYMENT_MODE or local")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "serve":
-        serve(args.host, args.port)
+        serve(args.host, args.port, deployment_mode=args.deployment_mode)
         return 0
     if args.command == "profile":
         selected = resolve_profile(args.source)

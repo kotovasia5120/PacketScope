@@ -4,7 +4,7 @@ const state = {
   result: null, annotations: [], selectedHypothesis: null, controller: null, jobId: null,
   compare: { ids: [], diffs: [], cursor: 0, mode: "offset" }, scrollTop: 0,
   undo: [], redo: [], editingAnnotation: null, demoProfile: null, flowId: "", direction: "both", requestVersion: 0,
-  sourceFile: null, sourceFormat: "auto", sourceRaw: false, scopePending: false, displayOnlyScope: false, packetQuery: "", schema: null, schemaValues: []
+  sourceFile: null, sourceFormat: "auto", sourceRaw: false, scopePending: false, displayOnlyScope: false, packetQuery: "", schema: null, schemaValues: [], deploymentMode: document.body.dataset.deploymentMode === "public-demo" ? "public-demo" : "local"
 };
 const $ = (selector) => document.querySelector(selector);
 const node = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = String(text); if (cls) value.className = cls; return value; };
@@ -26,6 +26,25 @@ const bytesOf = (packet) => {
   return hexBytes(packet.application_payload ?? packet.payload);
 };
 const setStatus = (text, error = false) => { $("#status").textContent = text; $("#status").classList.toggle("error", error); };
+const isPublicDemo = () => state.deploymentMode === "public-demo";
+const formatUploadLimit = (bytes) => bytes >= 1024 * 1024 && bytes % (1024 * 1024) === 0 ? `${bytes / (1024 * 1024)} MiB` : `${bytes.toLocaleString()} bytes`;
+async function configureDeployment() {
+  try {
+    const response = await fetch("/api/health");
+    if (!response.ok) return;
+    const health = await response.json();
+    state.deploymentMode = health.deployment_mode === "public-demo" ? "public-demo" : "local";
+    if (health.privacy_notice) $("#privacy-notice").textContent = health.privacy_notice;
+    if (Number.isInteger(health.upload_limit_bytes)) $(".limit-note").textContent = `${formatUploadLimit(health.upload_limit_bytes)} upload limit`;
+    if (isPublicDemo()) {
+      $("#analyze-button").textContent = "Upload to demo server";
+      $("#privacy-badge").textContent = "Hosted public demo · uploads are transmitted to this server";
+    }
+  } catch {
+    // The server-rendered copy remains truthful if the health request fails.
+  }
+}
+configureDeployment();
 const sourceKey = () => `packetscope:annotations:${contentHash(state.result?.packets || [])}`;
 function contentHash(value) { let hash = 2166136261; const text = JSON.stringify(value); for (let i = 0; i < text.length; i += 1) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16).padStart(8, "0"); }
 
@@ -61,13 +80,13 @@ async function analyzeFile(file) {
   state.sourceFile = file; state.sourceFormat = $("#format").value; state.sourceRaw = $("#raw-analysis").checked;
   state.flowId = ""; state.direction = "both"; state.displayOnlyScope = false;
   const body = new FormData(); body.append("file", file, file.name); body.append("format", state.sourceFormat); if (state.sourceRaw) body.append("raw", "true");
-  await runAnalysis(body, "Reading evidence and analyzing locally…", false);
+  await runAnalysis(body, isPublicDemo() ? "Uploading evidence to the hosted demo and analyzing…" : "Reading evidence and analyzing locally…", false);
 }
 
 async function runAnalysis(body, message, preserveAnnotations) {
   const version = ++state.requestVersion; const controller = new AbortController(); state.controller = controller; let jobId = null;
   $("#cancel-button").hidden = false; $("#analyze-button").disabled = true; $("#analysis-progress").hidden = false; setStatus(message);
-  try { const response = await fetch("/api/jobs", { method: "POST", body, signal: controller.signal }); const queued = await response.json(); if (!response.ok) throw new Error(queued.error || "Could not queue analysis"); jobId = queued.job_id; if (version !== state.requestVersion) return; state.jobId = jobId; let value; while (jobId) { await new Promise((resolve) => setTimeout(resolve, 60)); const statusResponse = await fetch(`/api/jobs/${jobId}`, { signal: controller.signal }); const status = await statusResponse.json(); if (version !== state.requestVersion) return; $("#analysis-progress").value = Number(status.progress || 0) / 100; $("#progress-label").textContent = `${status.status} · ${status.progress || 0}%`; if (status.status === "COMPLETE") { value = status.result; break; } if (status.status === "FAILED") throw new Error(status.error || "Analysis failed"); if (status.status === "CANCELLED") throw new DOMException("Analysis cancelled", "AbortError"); } if (!value) throw new Error("Analysis did not return a result"); if (version !== state.requestVersion) return; state.scopePending = false; loadResult(value, { preserveAnnotations }); setStatus(preserveAnnotations ? "Analysis scope updated for the selected flow and direction." : `Analyzed ${value.source.packet_count} packet(s) from ${value.source.name}.`); }
+  try { const response = await fetch("/api/jobs", { method: "POST", body, signal: controller.signal }); const queued = await response.json(); if (!response.ok) throw new Error(queued.error || "Could not queue analysis"); jobId = queued.job_id; if (version !== state.requestVersion) return; state.jobId = jobId; let value; while (jobId) { await new Promise((resolve) => setTimeout(resolve, 60)); const statusResponse = await fetch(`/api/jobs/${jobId}`, { signal: controller.signal }); const status = await statusResponse.json(); if (version !== state.requestVersion) return; $("#analysis-progress").value = Number(status.progress || 0) / 100; $("#progress-label").textContent = `${status.status} · ${status.progress || 0}%`; if (status.status === "COMPLETE") { value = status.result; break; } if (status.status === "FAILED") throw new Error(status.error || "Analysis failed"); if (status.status === "CANCELLED") throw new DOMException("Analysis cancelled", "AbortError"); } if (!value) throw new Error("Analysis did not return a result"); if (version !== state.requestVersion) return; state.scopePending = false; loadResult(value, { preserveAnnotations }); setStatus(preserveAnnotations ? "Analysis scope updated for the selected flow and direction." : isPublicDemo() ? `Uploaded and analyzed ${value.source.packet_count} packet(s) on the hosted demo server.` : `Analyzed ${value.source.packet_count} packet(s) locally from ${value.source.name}.`); }
   catch (error) { if (version === state.requestVersion) { state.scopePending = false; setStatus(error.name === "AbortError" ? "Analysis cancelled." : error.message, true); render(); } }
   finally { if (version !== state.requestVersion) return; state.controller = null; state.jobId = null; state.scopePending = false; $("#cancel-button").hidden = true; $("#analyze-button").disabled = false; $("#analysis-progress").hidden = true; $("#progress-label").textContent = "Idle"; }
 }
@@ -79,10 +98,10 @@ function requestScopedAnalysis() {
   state.controller?.abort();
   if (state.jobId) fetch(`/api/jobs/${state.jobId}`, { method: "DELETE" }).catch(() => {});
   const body = new FormData(); body.append("file", state.sourceFile, state.sourceFile.name); body.append("format", state.sourceFormat); body.append("direction", state.direction); if (state.sourceRaw) body.append("raw", "true"); if (state.flowId) body.append("flow_id", state.flowId);
-  runAnalysis(body, "Reanalyzing the selected flow and direction…", true);
+  runAnalysis(body, isPublicDemo() ? "Uploading evidence to the hosted demo for the selected scope…" : "Reanalyzing the selected flow and direction…", true);
 }
 async function cancelCurrentJob() { const id = state.jobId; state.controller?.abort(); if (id) { try { await fetch(`/api/jobs/${id}`, { method: "DELETE" }); } catch { /* the server may already have completed cleanup */ } } }
-function downloadDemo(format) { const profile = $("#demo-profile").value; const link = document.createElement("a"); link.href = `/api/demo/download?profile=${encodeURIComponent(profile)}&format=${format}`; link.download = `packetscope-${profile}.${format}`; link.click(); setStatus(`${format.toUpperCase()} demo generated locally.`); }
+function downloadDemo(format) { const profile = $("#demo-profile").value; const link = document.createElement("a"); link.href = `/api/demo/download?profile=${encodeURIComponent(profile)}&format=${format}`; link.download = `packetscope-${profile}.${format}`; link.click(); setStatus(isPublicDemo() ? `${format.toUpperCase()} demo downloaded from the hosted server.` : `${format.toUpperCase()} demo generated locally.`); }
 
 function validateProject(value) { if (!value || typeof value !== "object" || !Array.isArray(value.packets) || value.packets.length > 100000) throw new Error("packet list is missing or too large"); if (value.schema_version !== undefined && value.schema_version !== 2) throw new Error("unsupported schema version"); if (Array.isArray(value.annotations) && value.annotations.length > 1000) throw new Error("too many annotations"); if (value.project?.schema_version !== undefined && value.project.schema_version !== 1) throw new Error("unsupported project schema version"); }
 function validateSchema(value) { if (!value || typeof value !== "object" || value.schema_version !== 1 || !Array.isArray(value.fields) || value.fields.length > 1000 || !["raw_packet", "application_payload"].includes(value.coordinate_system || "raw_packet")) throw new Error("unsupported schema version, coordinate system, or fields are missing"); value.fields.forEach((field) => { if (!field || typeof field.name !== "string" || !field.name.trim() || !Number.isInteger(field.offset) || field.offset < 0 || !Number.isInteger(field.width) || field.width < 1 || field.width > 16 * 1024 * 1024 || !["big", "little", "unknown"].includes(field.endian || "unknown") || !["raw_packet", "application_payload"].includes(field.coordinate_system || value.coordinate_system || "raw_packet")) throw new Error("schema field has an invalid offset, width, endian, or coordinate system"); const type = String(field.type || "").toUpperCase(); if ((type === "UINT32" && field.width !== 4) || ((type === "UINT64" || type === "INT64") && field.width !== 8)) throw new Error("schema integer type does not match field width"); }); }

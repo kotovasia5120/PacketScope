@@ -19,14 +19,14 @@ jobs:
         run: |
           make wheel
           python -m venv /tmp/packetscope-wheel-check
-          /tmp/packetscope-wheel-check/bin/python -m pip install --no-index --no-deps dist/packetscope-0.1.0-py3-none-any.whl
+          /tmp/packetscope-wheel-check/bin/python -m pip install --no-index --no-deps dist/packetscope-0.2.0-py3-none-any.whl
           /tmp/packetscope-wheel-check/bin/packetscope --help
       - name: Verify wheel bytes are reproducible
         run: |
           rm -rf /tmp/packetscope-wheel-a /tmp/packetscope-wheel-b
           SOURCE_DATE_EPOCH=315532800 python -m pip wheel --no-deps --no-build-isolation . --wheel-dir /tmp/packetscope-wheel-a
           SOURCE_DATE_EPOCH=315532800 python -m pip wheel --no-deps --no-build-isolation . --wheel-dir /tmp/packetscope-wheel-b
-          test "$(sha256sum /tmp/packetscope-wheel-a/packetscope-0.1.0-py3-none-any.whl | cut -d' ' -f1)" = "$(sha256sum /tmp/packetscope-wheel-b/packetscope-0.1.0-py3-none-any.whl | cut -d' ' -f1)"
+          test "$(sha256sum /tmp/packetscope-wheel-a/packetscope-0.2.0-py3-none-any.whl | cut -d' ' -f1)" = "$(sha256sum /tmp/packetscope-wheel-b/packetscope-0.2.0-py3-none-any.whl | cut -d' ' -f1)"
 
   docker:
     runs-on: ubuntu-24.04

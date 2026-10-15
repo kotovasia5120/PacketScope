@@ -6,19 +6,19 @@
   <title>PacketScope — local protocol workbench</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body data-deployment-mode="local">
   <header class="topbar">
-    <div><p class="eyebrow">LOCAL-ONLY / EVIDENCE FIRST</p><h1>PacketScope</h1><p>Explore unknown binary protocols without turning guesses into facts.</p></div>
-    <div class="privacy-badge">No cloud · No telemetry</div>
+    <div><p class="eyebrow">LOCAL / PRIVATE / EVIDENCE FIRST</p><h1>PacketScope</h1><p>Explore unknown binary protocols without turning guesses into facts.</p></div>
+    <div id="privacy-badge" class="privacy-badge">Local/private · no cloud · no telemetry</div>
   </header>
   <main>
     <section class="panel upload-panel" aria-labelledby="load-heading">
-      <div class="section-heading"><div><p class="eyebrow">01 / LOAD EVIDENCE</p><h2 id="load-heading">Bring in packets</h2></div><span class="limit-note">256 MiB upload limit</span></div>
+      <div class="section-heading"><div><p class="eyebrow">01 / LOAD EVIDENCE</p><h2 id="load-heading">Bring in packets</h2></div><span class="limit-note">64 MiB upload limit</span></div>
       <form id="upload-form" enctype="multipart/form-data">
         <label class="dropzone" for="packet-file"><span class="drop-title">Choose a BIN, HEX, PCAP, or PCAPNG file</span><span class="drop-subtitle" id="file-name">Nothing loaded yet</span><input id="packet-file" name="file" type="file" accept=".bin,.hex,.pcap,.pcapng,.cap,.txt" required></label>
          <div class="form-row"><label for="format">Format<select id="format" name="format"><option value="auto">Auto-detect</option><option value="bin">BIN</option><option value="hex">HEX</option><option value="pcap">PCAP</option><option value="pcapng">PCAPNG</option></select></label><label class="check"><input id="raw-analysis" type="checkbox"> Analyze raw packet headers too</label><button id="analyze-button" type="submit">Analyze locally</button><label for="demo-profile">Demo profile<select id="demo-profile"><option value="crc16-be">CRC-16 / big-endian</option><option value="crc32-le">CRC-32 / little-endian + overflow</option></select></label><button id="demo-button" class="secondary" type="button">Load demo</button><button id="download-demo-pcap" class="secondary" type="button">Download PCAP</button><button id="download-demo-pcapng" class="secondary" type="button">Download PCAPNG</button><button id="cancel-button" class="secondary" type="button" hidden>Cancel</button></div>
       </form>
-      <div class="project-row"><label for="project-file">Restore saved project<input id="project-file" type="file" accept="application/json,.json"></label><label for="schema-file">Apply protocol schema<input id="schema-file" type="file" accept="application/json,.json"></label><button id="save-annotations" class="secondary" type="button">Save annotations locally</button></div>
+      <p id="privacy-notice" class="notice">Captures are processed by this local server and are not sent to a hosted service.</p><div class="project-row"><label for="project-file">Restore saved project<input id="project-file" type="file" accept="application/json,.json"></label><label for="schema-file">Apply protocol schema<input id="schema-file" type="file" accept="application/json,.json"></label><button id="save-annotations" class="secondary" type="button">Save annotations locally</button></div>
       <div class="progress-row"><progress id="analysis-progress" max="1" value="0" hidden></progress><span id="progress-label" class="muted">Idle</span></div><p id="status" class="status" role="status">Ready for a local file.</p>
     </section>
 

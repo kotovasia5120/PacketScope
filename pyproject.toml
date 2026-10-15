@@ -5,7 +5,7 @@ backend-path = ["."]
 
 [project]
 name = "packetscope"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local, explainable binary protocol reverse-engineering workbench."
 readme = "README.md"
 requires-python = "==3.12.7"
@@ -17,6 +17,6 @@ dependencies = []
 packetscope = "packetscope.cli:main"
 
 [tool.packetscope]
-max_upload_bytes = 268435456
+max_upload_bytes = 67108864
 max_packet_bytes = 16777216
 max_packets = 100000

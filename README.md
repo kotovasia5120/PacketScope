@@ -71,8 +71,9 @@ make serve
 ```
 
 Open <http://127.0.0.1:8765>. Upload a `.bin`, `.hex`, `.pcap`, or `.pcapng`
-file. The default upload limit is 256 MiB; individual packets are limited to
-16 MiB and the capture to 100,000 packets.
+file. The default upload limit is 64 MiB, which also matches the aggregate payload
+budget retained by asynchronous jobs; individual packets are limited to 16 MiB
+and the capture to 100,000 packets.
 
 ### WSL sandbox
 
@@ -100,7 +101,7 @@ python3.12 -m venv .venv
 make PYTHON=python3.12 test
 make PYTHON=python3.12 wheel
 python -m venv /tmp/packetscope-wheel-check
-/tmp/packetscope-wheel-check/bin/python -m pip install --no-index --no-deps dist/packetscope-0.1.0-py3-none-any.whl
+/tmp/packetscope-wheel-check/bin/python -m pip install --no-index --no-deps dist/packetscope-0.2.0-py3-none-any.whl
 /tmp/packetscope-wheel-check/bin/packetscope --help
 ```
 
@@ -153,24 +154,36 @@ The live demo is deployed as a Render **Web Service** from the repository's
 3. Set **Dockerfile Path** to `./Dockerfile` and **Docker Build Context
    Directory** to `.`.
 4. Leave **Docker Command** empty so Render uses the `CMD` in the Dockerfile.
-5. Enable **Auto-Deploy: On Commit** if deployments should follow updates to
+5. Set the environment variable `PACKETSCOPE_DEPLOYMENT_MODE` to
+   `public-demo`. This makes the public privacy contract explicit.
+6. Enable **Auto-Deploy: On Commit** if deployments should follow updates to
    `main`.
-6. After deployment, verify the service with:
+7. After deployment, verify the service with:
 
    ```bash
    curl https://packetscope-demo.onrender.com/api/health
    ```
 
-   A healthy service returns JSON containing `"status": "ok"` and
-   `"local_only": true`.
+   A public-demo service returns JSON containing `"status": "ok"`,
+   `"deployment_mode": "public-demo"`, and `"local_only": false`. Its
+   `privacy_notice` warns that uploaded captures are transmitted to the hosted
+   server.
 
 The container listens on `0.0.0.0:8765`, exposes `/api/health` for a health
-check, and has no required secrets or external services. Render's public URL
-is useful for the demo, but the local-only privacy model still means that
-private packet captures should be analyzed locally.
+check, and has no required secrets or external services. The local/private
+mode remains the default; use it for private packet captures.
 
 The same values are collected in [`docs/render-deploy.md`](docs/render-deploy.md)
 for deployment reviews or service recreation.
+
+## Deployment modes
+
+The server defaults to `local`, which preserves the private local-first
+behavior. For an intentionally hosted evaluation service, set
+`PACKETSCOPE_DEPLOYMENT_MODE=public-demo` or pass
+`--deployment-mode public-demo` to `packetscope serve`. Public mode changes the
+health response and browser copy to state that uploads are transmitted to the
+hosted server; it does not make uploaded captures confidential.
 
 ## CLI
 

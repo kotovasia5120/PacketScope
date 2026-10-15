@@ -6,7 +6,10 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Limits:
-    max_input_bytes: int = 256 * 1024 * 1024
+    # Keep the request/upload ceiling at or below the aggregate retained-job
+    # payload budget. This avoids advertising an upload that the asynchronous
+    # endpoint cannot retain safely.
+    max_input_bytes: int = 64 * 1024 * 1024
     max_packet_bytes: int = 16 * 1024 * 1024
     max_packets: int = 100_000
     max_pcapng_block_bytes: int = 64 * 1024 * 1024
@@ -19,6 +22,7 @@ class Limits:
     max_samples: int = 1_000
     max_job_payload_bytes: int = 64 * 1024 * 1024
     max_retained_jobs: int = 32
+    max_request_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -39,6 +43,8 @@ class Limits:
                 raise ValueError(f"{name} must be positive")
         if self.max_analysis_seconds <= 0:
             raise ValueError("max_analysis_seconds must be positive")
+        if self.max_request_seconds <= 0:
+            raise ValueError("max_request_seconds must be positive")
 
 
 @dataclass(frozen=True)

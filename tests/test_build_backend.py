@@ -21,7 +21,7 @@ class BuildBackendTests(unittest.TestCase):
                 hashlib.sha256(second_path.read_bytes()).digest(),
             )
             with zipfile.ZipFile(first_path) as wheel:
-                metadata = wheel.read("packetscope-0.1.0.dist-info/METADATA").decode("utf-8")
+                metadata = wheel.read("packetscope-0.2.0.dist-info/METADATA").decode("utf-8")
                 self.assertIn("Requires-Python: ==3.12.7", metadata)
 
 

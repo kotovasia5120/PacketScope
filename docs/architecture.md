@@ -40,8 +40,9 @@ BIN / HEX / PCAP / PCAPNG
 - `packetscope/schema.py` validates and applies the versioned, non-executable
   protocol schema. It permits overlapping and variable-range descriptions and
   only reads bounded imported bytes; it never generates parser code.
-- `packetscope/web.py` exposes only local, bounded HTTP operations and serves
-  static assets.
+- `packetscope/web.py` exposes bounded HTTP operations and serves static assets.
+  It defaults to private local mode; an explicit `public-demo` mode changes the
+  health/UI privacy contract so hosted uploads are disclosed to users.
 - `packetscope/static/` is a dependency-free presentation layer.
 - `packetscope/flows.py` groups decoded IPv4/IPv6 TCP/UDP packets into
   bidirectional endpoint-normalized flows. It preserves packet IDs and raw

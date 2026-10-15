@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import mimetypes
 import socket
+import struct
+import threading
+import time
 import uuid
 from email import policy
 from email.parser import BytesParser
@@ -12,8 +15,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from packetscope import __version__
 from packetscope.analysis import analyze_packets
-from packetscope.errors import PacketScopeError
+from packetscope.config import DeploymentConfig, deployment_from_env, format_bytes
+from packetscope.errors import FormatError, InputLimitError, PacketScopeError
 from packetscope.export import dumps_result
 from packetscope.importers import import_bytes
 from packetscope.models import Limits
@@ -27,20 +32,29 @@ STATIC_DIR = Path(__file__).with_name("static")
 
 
 class PacketScopeHandler(BaseHTTPRequestHandler):
-    server_version = "PacketScope/0.1"
+    server_version = f"PacketScope/{__version__}"
+    sys_version = ""
 
     def setup(self) -> None:
         super().setup()
         # A client that advertises a body and then stops must not pin a server
-        # thread forever.  This is deliberately short for the local UI; a
-        # large upload still arrives in one bounded request body.
-        self.connection.settimeout(10.0)
+        # thread forever. The deadline is also enforced between bounded reads
+        # so a slow trickle cannot keep a request alive indefinitely.
+        self.connection.settimeout(self.server.limits.max_request_seconds)
+        self.close_connection = True
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urlsplit(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
         if self.path == "/api/health":
-            self._json(HTTPStatus.OK, {"status": "ok", "local_only": True})
+            config = self.server.deployment  # type: ignore[attr-defined]
+            self._json(HTTPStatus.OK, {
+                "status": "ok",
+                "deployment_mode": config.mode,
+                "local_only": config.local_only,
+                "upload_limit_bytes": self.server.limits.max_input_bytes,  # type: ignore[attr-defined]
+                "privacy_notice": config.privacy_notice,
+            })
             return
         if parsed.path == "/api/demo/download":
             profile = query.get("profile", ["crc16-be"])[0]
@@ -82,16 +96,16 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             }
             self._json(HTTPStatus.OK, result)
             return
-        if self.path.startswith("/api/jobs/"):
-            job_id = self.path.removeprefix("/api/jobs/").split("/", 1)[0]
+        if parsed.path.startswith("/api/jobs/"):
+            job_id = parsed.path.removeprefix("/api/jobs/").split("/", 1)[0]
             status = self.server.analysis_manager.get(job_id)  # type: ignore[attr-defined]
             self._json(HTTPStatus.OK if status else HTTPStatus.NOT_FOUND, status or {"error": "job not found"})
             return
-        if self.path == "/" or self.path == "/index.html":
+        if parsed.path == "/" or parsed.path == "/index.html":
             self._static("index.html")
             return
-        if self.path.startswith("/static/"):
-            self._static(unquote(self.path.removeprefix("/static/")))
+        if parsed.path.startswith("/static/"):
+            self._static(unquote(parsed.path.removeprefix("/static/")))
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -105,14 +119,13 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         if self.path != "/api/analyze":
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
-        length_header = self.headers.get("Content-Length")
-        try:
-            content_length = int(length_header or "-1")
-        except ValueError:
-            content_length = -1
+        content_length = self._content_length()
         limit = self.server.limits.max_input_bytes  # type: ignore[attr-defined]
-        if content_length < 0:
+        if content_length is None:
             self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return
+        if content_length < 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid"})
             return
         if content_length > limit:
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds size limit"})
@@ -138,13 +151,20 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             result["warnings"] = _merge_warnings(result.get("warnings", []), imported.warnings)
             self._json(HTTPStatus.OK, result)
         except PacketScopeError as exc:
-            self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except (ValueError, UnicodeDecodeError) as exc:
-            self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            self._json(HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
+        except (ValueError, UnicodeDecodeError, struct.error, IndexError, OverflowError, RecursionError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "capture exceeds available processing budget"})
+        except Exception:
+            # Malformed/adversarial input must not terminate the request thread
+            # or expose exception text that could contain capture data.
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid capture"})
 
     def do_DELETE(self) -> None:  # noqa: N802
-        if self.path.startswith("/api/jobs/"):
-            job_id = self.path.removeprefix("/api/jobs/").split("/", 1)[0]
+        path = urlsplit(self.path).path
+        if path.startswith("/api/jobs/"):
+            job_id = path.removeprefix("/api/jobs/").split("/", 1)[0]
             cancelled, current_status = self.server.analysis_manager.cancel_with_status(job_id)  # type: ignore[attr-defined]
             if current_status is None:
                 self._json(HTTPStatus.NOT_FOUND, {"job_id": job_id, "cancelled": False})
@@ -159,13 +179,12 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def _submit_job(self) -> None:
-        length_header = self.headers.get("Content-Length")
-        try:
-            content_length = int(length_header or "-1")
-        except ValueError:
-            content_length = -1
-        if content_length < 0:
+        content_length = self._content_length()
+        if content_length is None:
             self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return
+        if content_length < 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid"})
             return
         if content_length > self.server.limits.max_input_bytes:  # type: ignore[attr-defined]
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds size limit"})
@@ -183,8 +202,20 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
                 selected_direction=selected_direction, flow_id=flow_id,
             )  # type: ignore[attr-defined]
             self._json(HTTPStatus.ACCEPTED, {"job_id": job.job_id, "status": job.status, "progress": job.progress})
-        except (ValueError, RuntimeError) as exc:
-            self._json(HTTPStatus.BAD_REQUEST if isinstance(exc, ValueError) else HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+        except (ValueError, PacketScopeError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if "payload" in message or "retention" in message:
+                self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds the retained-job payload budget"})
+            else:
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "analysis service is busy"})
+        except (struct.error, IndexError, OverflowError, RecursionError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid capture"})
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "capture exceeds available processing budget"})
+        except Exception:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid capture"})
 
     def log_message(self, _format: str, *_args: object) -> None:
         # Captures can contain secrets; the local server intentionally stays quiet.
@@ -201,22 +232,58 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         content = candidate.read_bytes()
+        if candidate.name == "index.html" and candidate.parent == STATIC_DIR:
+            content = _render_index(content, self.server.deployment, self.server.limits)  # type: ignore[attr-defined]
         if len(content) > self.server.limits.max_response_bytes:  # type: ignore[attr-defined]
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "response exceeds configured limit"})
             return
         content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
 
-    def _read_body(self, length: int) -> bytes | None:
-        try:
-            return self.rfile.read(length)
-        except (TimeoutError, socket.timeout):
-            self._json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request body read timed out"})
+    def _content_length(self) -> int | None:
+        values = self.headers.get_all("Content-Length", [])
+        if not values:
             return None
+        if len(values) != 1:
+            return -1
+        raw = values[0].strip()
+        if not raw.isascii() or not raw.isdigit():
+            return -1
+        try:
+            return int(raw)
+        except ValueError:
+            return -1
+
+    def _read_body(self, length: int) -> bytes | None:
+        if length == 0:
+            return b""
+        deadline = time.monotonic() + self.server.limits.max_request_seconds  # type: ignore[attr-defined]
+        chunks: list[bytes] = []
+        remaining = length
+        while remaining:
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                self._json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request body read timed out"})
+                return None
+            self.connection.settimeout(timeout)
+            try:
+                chunk = self.rfile.read(min(64 * 1024, remaining))
+            except (TimeoutError, socket.timeout):
+                self._json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request body read timed out"})
+                return None
+            except OSError:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "request body could not be read"})
+                return None
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
 
     def _evaluate_demo(self) -> None:
         """Evaluate a previously returned demo result without exposing truth data.
@@ -227,14 +294,13 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         failure is converted to a response so malformed requests cannot tear
         down the HTTP connection.
         """
-        length_header = self.headers.get("Content-Length")
-        try:
-            length = int(length_header or "-1")
-        except ValueError:
-            length = -1
+        length = self._content_length()
         limit = self.server.limits.max_input_bytes  # type: ignore[attr-defined]
-        if length < 0:
+        if length is None:
             self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return
+        if length < 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid"})
             return
         if length > limit:
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "evaluation request exceeds size limit"})
@@ -250,8 +316,11 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             return
         try:
             value = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation request must be valid JSON"})
+            return
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "evaluation request exceeds processing budget"})
             return
         if not isinstance(value, dict):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation request must be a JSON object"})
@@ -329,27 +398,116 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
 
 
 class PacketScopeServer(ThreadingHTTPServer):
-    def __init__(self, address: tuple[str, int], limits: Limits | None = None):
-        super().__init__(address, PacketScopeHandler)
+    daemon_threads = True
+    request_queue_size = 16
+
+    def __init__(
+        self,
+        address: tuple[str, int],
+        limits: Limits | None = None,
+        *,
+        deployment_mode: str | None = None,
+        max_concurrent_requests: int = 8,
+    ):
+        if max_concurrent_requests <= 0:
+            raise ValueError("max_concurrent_requests must be positive")
         self.limits = limits or Limits()
+        self.deployment = DeploymentConfig(deployment_mode) if deployment_mode is not None else deployment_from_env()
+        self.deployment_mode = self.deployment.mode
+        self.max_concurrent_requests = max_concurrent_requests
+        self._request_slots = threading.BoundedSemaphore(max_concurrent_requests)
+        super().__init__(address, PacketScopeHandler)
         self.demo_truth: dict[str, list[dict]] = {}
         self.demo_records: dict[str, dict] = {}
         self.analysis_manager = AnalysisManager(self.limits)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            _reject_busy_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
     def server_close(self) -> None:
         self.analysis_manager.close()
         super().server_close()
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765, limits: Limits | None = None) -> None:
-    server = PacketScopeServer((host, port), limits)
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    limits: Limits | None = None,
+    *,
+    deployment_mode: str | None = None,
+) -> None:
+    server = PacketScopeServer((host, port), limits, deployment_mode=deployment_mode)
     try:
         server.serve_forever()
     finally:
         server.server_close()
 
 
+
+def _safe_capture_error(exc: Exception) -> str:
+    """Return a bounded client error without echoing capture-derived text."""
+    if isinstance(exc, InputLimitError):
+        return "input exceeds a configured safety limit"
+    if isinstance(exc, FormatError):
+        return "invalid capture format"
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        return message if len(message) <= 120 else "invalid capture request"
+    return "invalid capture"
+
+
+def _reject_busy_request(request) -> None:
+    payload = b'{"error":"server concurrency limit reached"}'
+    response = (
+        b"HTTP/1.1 503 Service Unavailable\r\n"
+        b"Content-Type: application/json; charset=utf-8\r\n"
+        b"Cache-Control: no-store\r\n"
+        b"Retry-After: 1\r\n"
+        b"Connection: close\r\n"
+        + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+        + payload
+    )
+    try:
+        request.settimeout(1.0)
+        request.sendall(response)
+    except OSError:
+        pass
+    finally:
+        request.close()
+
+
+def _render_index(content: bytes, config: DeploymentConfig, limits: Limits) -> bytes:
+    replacements = {
+        "PacketScope — local protocol workbench": config.ui_title,
+        'data-deployment-mode="local"': f'data-deployment-mode="{config.mode}"',
+        "LOCAL / PRIVATE / EVIDENCE FIRST": config.ui_eyebrow,
+        "Local/private · no cloud · no telemetry": config.ui_badge,
+        "64 MiB upload limit": f"{format_bytes(limits.max_input_bytes)} upload limit",
+        "Analyze locally": config.ui_analyze_label,
+        "Ready for a local file.": config.ui_ready_status,
+        "Captures are processed by this local server and are not sent to a hosted service.": config.privacy_notice,
+    }
+    rendered = content.decode("utf-8")
+    for source, replacement in replacements.items():
+        rendered = rendered.replace(source, replacement)
+    return rendered.encode("utf-8")
+
 def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bool, str, str | None]:
+    if any(character in content_type for character in "\r\n") or len(content_type) > 1024:
+        raise ValueError("invalid multipart content type")
     if not content_type.lower().startswith("multipart/form-data"):
         raise ValueError("Content-Type must be multipart/form-data")
     message = BytesParser(policy=policy.default).parsebytes(
@@ -380,11 +538,18 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bo
             if len(candidate) > 200:
                 raise ValueError("flow_id exceeds length limit")
             flow_id = candidate or None
+        if field_name is not None and len(field_name) > 64:
+            raise ValueError("multipart field name exceeds length limit")
         if disposition == "form-data" and field_name in {"file", "packet"}:
+            if file_part is not None:
+                raise ValueError("multipart form must contain one file")
             file_part = part
     if file_part is not None:
         filename = file_part.get_filename() or "upload.bin"
-        return filename[:200], requested_format, file_part.get_payload(decode=True) or b"", analyze_raw, selected_direction, flow_id
+        payload = file_part.get_payload(decode=True)
+        if not isinstance(payload, bytes):
+            raise ValueError("multipart file payload is invalid")
+        return filename[:200], requested_format, payload, analyze_raw, selected_direction, flow_id
     raise ValueError("multipart field 'file' is required")
 
 

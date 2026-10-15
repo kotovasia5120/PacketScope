@@ -26,7 +26,7 @@ def parse_hex(data: bytes, name: str, limits: Limits) -> ImportResult:
         for token in line.replace(",", " ").split():
             match = _TOKEN.fullmatch(token)
             if not match:
-                raise FormatError(f"invalid HEX token on line {line_number}: {token!r}")
+                raise FormatError(f"invalid HEX token on line {line_number}")
             values.append(int(match.group(1), 16))
             if len(values) > limits.max_packet_bytes:
                 raise InputLimitError(

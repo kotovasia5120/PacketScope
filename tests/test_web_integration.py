@@ -63,6 +63,59 @@ class WebIntegrationTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn(b"PacketScope", response.read())
 
+    def test_public_demo_health_and_ui_disclose_remote_uploads(self):
+        server = PacketScopeServer(("127.0.0.1", 0), Limits(max_input_bytes=512), deployment_mode="public-demo")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urllib.request.urlopen(base + "/api/health", timeout=2) as response:
+                health = json.load(response)
+            self.assertEqual(health["deployment_mode"], "public-demo")
+            self.assertFalse(health["local_only"])
+            self.assertIn("transmitted", health["privacy_notice"])
+            with urllib.request.urlopen(base + "/", timeout=2) as response:
+                page = response.read().decode("utf-8")
+            self.assertIn("PUBLIC DEMO / EVIDENCE FIRST", page)
+            self.assertIn("uploads are transmitted to this server", page)
+            self.assertIn("uploaded captures are transmitted", page)
+            self.assertNotIn("local-only", page.lower())
+            self.assertNotIn("local protocol workbench", page.lower())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_malformed_hex_error_does_not_echo_payload(self):
+        body, content_type = multipart(b"TOP-SECRET-CAPTURE", filename="capture.hex")
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/analyze", "POST", body, content_type)
+        self.assertEqual(context.exception.code, 400)
+        self.assertNotIn(b"TOP-SECRET-CAPTURE", context.exception.read())
+        with self.request("/api/health") as response:
+            self.assertEqual(response.status, 200)
+
+    def test_job_retention_limit_is_reported_as_payload_limit(self):
+        self.server.limits = Limits(max_input_bytes=512, max_job_payload_bytes=2)
+        self.server.analysis_manager.limits = self.server.limits
+        body, content_type = multipart(b"payload")
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/jobs", "POST", body, content_type)
+        self.assertEqual(context.exception.code, 413)
+        self.assertIn(b"retained-job payload budget", context.exception.read())
+
+    def test_concurrency_limit_rejects_without_starting_request_thread(self):
+        held = [self.server._request_slots.acquire(blocking=False) for _ in range(self.server.max_concurrent_requests)]
+        self.assertTrue(all(held))
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self.request("/api/health")
+            self.assertEqual(context.exception.code, 503)
+            self.assertIn(b"concurrency limit", context.exception.read())
+        finally:
+            for _ in held:
+                self.server._request_slots.release()
+
     def test_demo_evaluation_returns_metrics_for_both_profiles(self):
         self.server.limits = Limits(max_input_bytes=2 * 1024 * 1024)
         for profile in ("crc16-be", "crc32-le"):
@@ -217,6 +270,22 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 413)
         with self.request("/api/health") as response:
             self.assertEqual(response.status, 200)
+
+    def test_request_body_timeout_is_bounded_and_server_survives(self):
+        self.server.limits = Limits(max_input_bytes=512, max_request_seconds=0.05)
+        sock = socket.create_connection(("127.0.0.1", self.server.server_port), timeout=2)
+        request = (
+            "POST /api/analyze HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.server.server_port}\r\n"
+            "Content-Length: 3\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
+        sock.sendall(request)
+        response = sock.recv(4096)
+        sock.close()
+        self.assertIn(b"408", response.split(b"\r\n", 1)[0])
+        with self.request("/api/health") as health:
+            self.assertEqual(health.status, 200)
 
     def test_short_body_is_rejected_and_server_survives(self):
         sock = socket.create_connection(("127.0.0.1", self.server.server_port), timeout=2)

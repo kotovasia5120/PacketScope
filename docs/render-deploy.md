@@ -20,6 +20,12 @@ Use these values when creating or editing the service:
 | Docker Command | *(empty; use the Dockerfile `CMD`)* |
 | Auto-Deploy | On Commit |
 
+Set this service environment variable:
+
+| Variable | Value |
+| --- | --- |
+| `PACKETSCOPE_DEPLOYMENT_MODE` | `public-demo` |
+
 The Dockerfile runs `make test` during the image build. The resulting
 container starts the server on `0.0.0.0:8765` and exposes the health endpoint
 at `/api/health`.
@@ -36,10 +42,10 @@ Check the service without uploading a capture:
 curl --fail https://packetscope-demo.onrender.com/api/health
 ```
 
-Expected response:
+Expected response includes the explicit public deployment contract:
 
 ```json
-{"status":"ok","local_only":true}
+{"status":"ok","deployment_mode":"public-demo","local_only":false,"upload_limit_bytes":67108864,"privacy_notice":"Warning: uploaded captures are transmitted to and processed by this hosted public demo server. Do not upload confidential data."}
 ```
 
 The walkthrough video is available at
@@ -47,7 +53,8 @@ The walkthrough video is available at
 
 ## Privacy note
 
-The hosted service is a public demonstration endpoint. Do not upload
-confidential or otherwise sensitive captures to it. Use `make serve` on the
-local machine, or run the Docker image bound to localhost, for private
+The hosted service is a public demonstration endpoint. Its UI and health
+endpoint explicitly warn that uploads are transmitted to the hosted server. Do
+not upload confidential or otherwise sensitive captures to it. Use `make serve`
+on the local machine, or run the Docker image bound to localhost, for private
 analysis.
