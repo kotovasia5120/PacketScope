@@ -93,6 +93,9 @@ Commits containing the P0 work:
 | --- | --- |
 | `9972dab` | Enforce Python 3.12.7 in Makefile, add dependency-free build backend, Docker checks, and CI workflow |
 | `676b855` | Harden PCAP/PCAPNG parsing, add bounded analysis, HTTP failure handling, protocol decoding, and 21-test coverage |
+| `2c7d262` | Record verification limits, reference-corpus rights/hashes, and next-phase planning |
+| `a5d69fd` | Preserve unsigned PCAP link-type values |
+| `a10d981` | Avoid a host-specific Debian package pin in the Docker build |
 
 The Docker build must still be run on a clean Linux host or GitHub Actions
 before Docker can be marked **PASS**. The CI workflow deliberately records the
