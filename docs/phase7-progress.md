@@ -176,5 +176,5 @@ without treating the earlier release-candidate snapshot as the final state.
 | Hosted GitHub Actions | **UNVERIFIED** — no push or hosted run was authorized |
 
 Focused commits for this continuation are `afb74bb`, `04858d7`, `1737814`,
-`22bcfe1`, `b2fcac2`, and `cd1e4fd`. The untracked `.opencode/` directory is
+`22bcfe1`, `b2fcac2`, `cd1e4fd`, `2f284f1`, and `13c95dc`. The untracked `.opencode/` directory is
 pre-existing workspace material and remains intentionally untouched.
