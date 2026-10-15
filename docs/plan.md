@@ -2,29 +2,27 @@
 
 ## P0 — usable local vertical slice
 
-- Import BIN, HEX, classic PCAP, and basic PCAPNG packet blocks.
+- Import BIN, HEX, PCAP, and PCAPNG packet blocks.
 - Show packets as absolute-offset HEX/ASCII rows.
 - Compare aligned messages and identify constant/variable regions.
-- Emit deterministic candidates for magic bytes, counters, lengths, and common
-  checksums, always with evidence and caveats.
+- Emit deterministic, explicitly hypothetical candidates.
 - Add manual annotations, JSON export, upload limits, Docker, and offline tests.
 
-**Completion criteria:** a synthetic capture can be uploaded in the browser,
-inspected, annotated, and exported without network access; malformed and
-oversized inputs return bounded errors; `make test` passes under Python 3.12.7.
+**Status:** Implemented. The pinned-runtime, Docker, and hosted-CI gates remain unverified in the current environment because only Python 3.11.2 is available and Docker/GitHub CLI are absent.
 
-## P1 — stronger protocol investigation
+## Phase 3 — explainable protocol reverse engineering
 
-- Add packet grouping and direction-aware views.
-- Add field-width/endian alternatives and checksum range explanations.
-- Analyze decoded protocol fields as context without promoting them to facts.
-- Add CRC-family and checksum-range analysis with synthetic ground truth.
-- Add saved local workspaces and import/export of annotation sets.
+Implemented in the current branch:
 
-**Completion criteria:** a user can compare multiple message groups and trace
-each candidate to source packets and byte ranges; protocol-field context and
-CRC candidates remain hypotheses with deterministic evidence and regression
-fixtures. This phase is planned only; it has not started in the P0 work.
+- A unified `FieldHypothesis` model with byte-precise absolute and payload-relative offsets.
+- Application-payload-first analysis with explicit raw-packet opt-in and decoder limitations.
+- Constant prefixes/suffixes, variability statistics, entropy/frequency observations, length, sequence, bit-flag, and message-type candidates.
+- Bounded alignment observations for inserted/deleted bytes and variable-length messages.
+- CRC-8, CRC-16/CCITT-FALSE, CRC-16/MODBUS, CRC-32/ISO-HDLC, XOR-8, and additive checksum discovery with standard vectors and search/time limits.
+- Deterministic synthetic corpora A–D, malformed/insufficient evidence/resource tests, JSON round-trip checks, and protocol-layer offset regression coverage.
+- Overview/Compare/Fields/CRC tabs, safe DOM rendering, byte highlighting, evidence display, manual confirmation/rejection annotations, raw-analysis control, local annotation/project restoration, and request cancellation.
+
+**Remaining Phase 3 work:** server-side progress/cancellation for long analysis, richer grouping/direction controls, and a browser-level end-to-end evaluation harness are not yet implemented.
 
 ## P2 — scale and collaboration ergonomics
 
@@ -32,7 +30,3 @@ fixtures. This phase is planned only; it has not started in the P0 work.
 - Add reproducible analysis profiles and CLI batch reports.
 - Add optional local plugin hooks with a documented, sandbox-free boundary.
 - Improve keyboard navigation and visual filtering for large hypothesis sets.
-
-**Completion criteria:** large bounded inputs remain responsive in documented
-limits, outputs stay schema-compatible, and all behavior remains local and
-telemetry-free.

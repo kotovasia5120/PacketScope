@@ -5,8 +5,8 @@ unknown binary protocols. Load synthetic or real packet captures, compare bytes,
 inspect HEX/ASCII, and record evidence-backed hypotheses without sending data to
 cloud AI or external APIs.
 
-> **Status:** P0 first working iteration. Automatic findings are candidates,
-> not confirmed protocol facts.
+> **Status:** Phase 3 analysis engine and local evidence UI. Automatic findings are
+> hypotheses, not confirmed protocol facts.
 
 ## What works in this iteration
 
@@ -15,7 +15,8 @@ cloud AI or external APIs.
 - Absolute-offset HEX/ASCII packet viewer.
 - Byte-level comparison across two or more messages.
 - Constant and variable aligned regions.
-- Cautious candidates for magic bytes, counters, length fields, and checksums.
+- Cautious candidates for magic bytes, counters, lengths, bit flags, message types, alignment, and checksums/CRCs.
+- Unified field evidence with separate raw-packet and application-payload offsets.
 - Manual field annotations and versioned JSON export.
 - Bounded uploads and no telemetry, cloud AI, or execution of packet contents.
 - Basic Ethernet, IPv4/IPv6, TCP, and UDP metadata decoding without fragment
@@ -72,38 +73,23 @@ See [`docs/architecture.md`](docs/architecture.md) and
 
 ## Verification record
 
-The initial build environment reported Python 3.11.2 and did not have Docker,
-while the project pins Python 3.12.7. Verification on 2026-10-15 therefore
-records both the successful standard-library checks and the unavailable Docker
-check:
+The current container has Python 3.11.2, while the supported runtime is pinned to Python 3.12.7. Docker and the GitHub CLI are not installed, so those gates are explicitly blocked/unverified rather than reported as passing.
 
-| Command | Result |
+| Command or gate | Result |
 | --- | --- |
-| `python3 -m unittest discover -s tests -p 'test_*.py' -v` | **PASS** — 21 tests under the available Python 3.11.2 (useful functional evidence, but not the pinned runtime) |
-| `make test` | **BLOCKED** — correctly refused Python 3.11.2; the project requires exactly Python 3.12.7 |
-| `python3 -m compileall -q packetscope tests` | **PASS** |
-| `python3 -m pip wheel --no-deps --no-build-isolation . --wheel-dir /tmp/packetscope-wheel` | **BLOCKED** — the available Python 3.11.2 is outside the declared 3.12 range |
-| `docker version` | **BLOCKED** — Docker CLI is unavailable in the build environment |
-| `docker build -t packetscope:local .` | **UNVERIFIED** — not executed; no Docker CLI was available |
-| `.github/workflows/ci.yml` Docker build/offline test | **UNVERIFIED** — workflow added, but no GitHub Actions run result is available from this checkout |
+| `python -m unittest discover -s tests -p 'test_*.py' -v` | **PASS** — 34 tests under Python 3.11.2; useful functional evidence, not pinned-runtime verification |
+| `make test` | **BLOCKED** — correctly refused Python 3.11.2 |
+| `python -m compileall -q packetscope tests` | **PASS** |
+| `node --check packetscope/static/app.js` | **PASS** — when Node is available in the verification container |
+| `docker version` / `docker build` | **BLOCKED** — Docker CLI unavailable |
+| GitHub Actions run | **UNVERIFIED** — `gh` CLI unavailable and no run receipt is present in this checkout |
 
-Commits containing the P0 work:
+The mandatory tests are offline and use only deterministic synthetic fixtures. CRC reference values and parameters are documented in [`docs/crc.md`](docs/crc.md).
 
-| Commit | Change |
-| --- | --- |
-| `9972dab` | Enforce Python 3.12.7 in Makefile, add dependency-free build backend, Docker checks, and CI workflow |
-| `676b855` | Harden PCAP/PCAPNG parsing, add bounded analysis, HTTP failure handling, protocol decoding, and 21-test coverage |
-| `2c7d262` | Record verification limits, reference-corpus rights/hashes, and next-phase planning |
-| `a5d69fd` | Preserve unsigned PCAP link-type values |
-| `a10d981` | Avoid a host-specific Debian package pin in the Docker build |
+## Phase 3 usage
 
-The Docker build must still be run on a clean Linux host or GitHub Actions
-before Docker can be marked **PASS**. The CI workflow deliberately records the
-offline container test separately from the port-forwarded HTTP smoke test.
+The CLI can explicitly inspect raw packet bytes with `--raw`; otherwise decoded PCAP/PCAPNG application payloads are analyzed when the link/network/transport decoder can identify them. The browser exposes the same choice as “Analyze raw packet headers too”. Exported JSON can be restored through the browser’s saved-project control.
 
-Independent corpus licensing and hashes are recorded in
-[`docs/reference-corpora.md`](docs/reference-corpora.md); no external fixture
-is part of the mandatory offline suite.
 
 ## License
 

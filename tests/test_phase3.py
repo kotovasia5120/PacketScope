@@ -1,8 +1,10 @@
+import json
 import struct
 import unittest
 
 from packetscope.analysis import analyze_packets
-from packetscope.models import Packet
+from packetscope.export import dumps_result
+from packetscope.models import Limits, Packet
 from tests.fixtures.phase3_corpus import corpus_a, corpus_b, corpus_c, corpus_d
 
 
@@ -45,6 +47,15 @@ class Phase3CorpusTests(unittest.TestCase):
         result = analyze_packets([Packet(0, b"abc"), Packet(1, b"abd")])
         self.assertEqual(result["analysis"]["status"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(result["hypotheses"], [])
+
+    def test_analysis_budget_and_json_round_trip_are_bounded(self):
+        packets = [Packet(index, payload) for index, payload in enumerate(corpus_a())]
+        limited = analyze_packets(packets, limits=Limits(max_crc_ranges=1))
+        self.assertEqual(limited["analysis"]["crc_status"], "SEARCH_LIMIT_REACHED")
+        restored = json.loads(dumps_result(limited))
+        self.assertEqual(restored["hypotheses"], limited["hypotheses"])
+        cancelled = analyze_packets(packets, cancel=lambda: True)
+        self.assertEqual(cancelled["status"], "CANCELLED")
 
     def test_application_payload_offsets_are_not_raw_header_offsets(self):
         packets = [Packet(index, ethernet_ipv4_udp(b"\xaa\x01" + bytes((index, 2, 3))), link_type=1) for index in range(3)]

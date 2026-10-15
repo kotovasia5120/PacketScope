@@ -51,3 +51,11 @@ source, including block trailers and section/interface state. Packet bytes are
 treated only as data. Results say
 `candidate` or `hypothesis` and include a confidence plus evidence; users can
 add manual annotations that remain distinct from automatic findings.
+
+## Phase 3 analysis contract
+
+`FieldHypothesis` keeps the packet id, absolute raw-packet offset, optional application-payload-relative offset, width, endian, candidate value, confidence, evidence, contradictions, sample count, status, and alternatives together. Automatically generated objects use `hypothesis`; only a browser or API user action may create a confirmed annotation.
+
+By default, decoded Ethernet/IP/transport headers are excluded from discovery. The response records protocol status and limitations for packets whose application payload cannot be decoded. `analyze_raw=True` (the CLI `--raw` option or the upload `raw` field) explicitly switches to raw packet bytes.
+
+The CRC detector has fixed algorithm and range budgets and supports variable-length messages when the checksum is in an end-relative location. Its confidence includes sample count and search-space size; it is not a match percentage.
