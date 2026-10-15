@@ -10,12 +10,15 @@ from packetscope.models import Limits
 from packetscope.web import PacketScopeServer
 
 
-def multipart(payload: bytes, filename: str = "sample.bin") -> tuple[bytes, str]:
+def multipart(payload: bytes, filename: str = "sample.bin", raw: bool = False) -> tuple[bytes, str]:
     boundary = "----PacketScope" + uuid.uuid4().hex
     body = (
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
         "Content-Type: application/octet-stream\r\n\r\n"
-    ).encode() + payload + f"\r\n--{boundary}--\r\n".encode()
+    ).encode() + payload
+    if raw:
+        body += f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"raw\"\r\n\r\ntrue".encode()
+    body += f"\r\n--{boundary}--\r\n".encode()
     return body, f"multipart/form-data; boundary={boundary}"
 
 
@@ -52,6 +55,12 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(result["source"]["byte_count"], 4)
         self.assertEqual(result["source"]["format"], "bin")
         self.assertEqual(result["packets"][0]["payload"], "aa010203")
+
+    def test_raw_analysis_option_is_exposed(self):
+        body, content_type = multipart(b"raw-bytes", raw=True)
+        with self.request("/api/analyze", "POST", body, content_type) as response:
+            result = json.load(response)
+        self.assertEqual(result["analysis"]["scope"], "raw_packet")
 
     def test_upload_limit_returns_413_and_server_survives(self):
         body, content_type = multipart(b"x" * 600)

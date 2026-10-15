@@ -55,9 +55,9 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
             return
         try:
-            name, format_name, payload = _multipart_file(self.headers.get("Content-Type", ""), body)
+            name, format_name, payload, analyze_raw = _multipart_file(self.headers.get("Content-Type", ""), body)
             imported = import_bytes(name, payload, format_name, self.server.limits)  # type: ignore[attr-defined]
-            result = analyze_packets(imported.packets, limits=self.server.limits)  # type: ignore[attr-defined]
+            result = analyze_packets(imported.packets, limits=self.server.limits, analyze_raw=analyze_raw)  # type: ignore[attr-defined]
             result["source"] = {
                 "name": name,
                 "format": imported.format,
@@ -122,7 +122,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765, limits: Limits | None = Non
         server.server_close()
 
 
-def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes]:
+def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bool]:
     if not content_type.lower().startswith("multipart/form-data"):
         raise ValueError("Content-Type must be multipart/form-data")
     message = BytesParser(policy=policy.default).parsebytes(
@@ -131,15 +131,18 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes]:
     if not message.is_multipart():
         raise ValueError("invalid multipart body")
     requested_format = "auto"
+    analyze_raw = False
     file_part = None
     for part in message.iter_parts():
         disposition = part.get_content_disposition()
         field_name = part.get_param("name", header="content-disposition")
         if disposition == "form-data" and field_name == "format":
             requested_format = (part.get_content() or "auto").strip().lower()
+        if disposition == "form-data" and field_name == "raw":
+            analyze_raw = (part.get_content() or "").strip().lower() in {"1", "true", "yes", "on"}
         if disposition == "form-data" and field_name in {"file", "packet"}:
             file_part = part
     if file_part is not None:
         filename = file_part.get_filename() or "upload.bin"
-        return filename[:200], requested_format, file_part.get_payload(decode=True) or b""
+        return filename[:200], requested_format, file_part.get_payload(decode=True) or b"", analyze_raw
     raise ValueError("multipart field 'file' is required")
