@@ -103,6 +103,7 @@ test("supports HEX interaction and project persistence", async ({ page }, testIn
   await page.locator("#hypotheses-view .hypothesis-card").first().click();
   await expect(page.locator("#hex-view .byte-hit").first()).toBeVisible();
   await page.locator("#payload-mode").selectOption("raw");
+  await expect(page.locator("#hex-view .byte-hit").first()).toBeVisible();
   await page.locator("#offset-search").fill("0x0");
   await page.getByRole("button", { name: "Go" }).click();
   await expect(page.locator("#status")).toContainText("0x0");
