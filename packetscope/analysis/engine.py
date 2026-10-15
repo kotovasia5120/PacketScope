@@ -11,7 +11,7 @@ from packetscope.errors import InputLimitError
 from packetscope.flows import group_flows, select_flow_packets
 from packetscope.models import FieldHypothesis, Limits, Packet
 from packetscope.profiles import AnalysisProfile, limits_for_profile, packet_dataset_sha256, profile_report, resolve_profile
-from packetscope.protocols import decode_packet
+from packetscope.protocols import coordinate_bytes, decode_packet
 from .crc import SearchBudget, discover_checksums
 
 
@@ -165,6 +165,12 @@ def analyze_packets(
         "analysis": {
             "status": analysis_status,
             "scope": "raw_packet" if analyze_raw else "application_payload",
+            "coordinate_system": "raw_packet" if analyze_raw else "application_payload",
+            "coordinate_metadata": {
+                "unit": "bytes",
+                "raw_packet": {"origin": "captured_packet_start"},
+                "application_payload": {"origin": "decoded_transport_payload_start"},
+            },
             "contexts": contexts[:128],
             "crc_status": crc_status,
             "crc_candidates_tested": crc_candidates,
@@ -184,23 +190,23 @@ def _analysis_views(packets: list[Packet], analyze_raw: bool) -> tuple[list[_Vie
         decoded = decode_packet(packet)
         context: dict[str, Any] = {"packet_id": packet.index, "link_type": packet.link_type}
         if analyze_raw:
-            context.update({"scope": "raw_packet", "payload_offset": 0})
+            context.update({"scope": "raw_packet", "coordinate_system": "raw_packet", "payload_offset": 0})
             view = _View(packet, packet.payload, 0, 0, "raw_packet", "raw packet analysis was explicitly requested")
             views.append(view)
         elif packet.link_type is None:
-            context.update({"scope": "application_payload", "payload_offset": 0})
+            context.update({"scope": "application_payload", "coordinate_system": "application_payload", "payload_offset": 0})
             views.append(_View(packet, packet.payload, 0, 0, "application_payload", "no link-layer metadata; treating imported bytes as application payload"))
         else:
             transport = decoded.get("transport") or decoded.get("network", {}).get("transport")
             if isinstance(transport, dict) and transport.get("status") == "ok":
                 absolute = int(transport.get("payload_offset", 0))
                 data = packet.payload[absolute : absolute + int(transport.get("payload_length", 0))]
-                context.update({"scope": "application_payload", "payload_offset": absolute, "payload_length": len(data), "protocol": transport.get("protocol")})
+                context.update({"scope": "application_payload", "coordinate_system": "application_payload", "payload_offset": absolute, "payload_length": len(data), "protocol": transport.get("protocol")})
                 limitation = "transport payload is truncated" if transport.get("truncated") else None
                 views.append(_View(packet, data, absolute, 0, "application_payload", limitation))
             else:
                 status = decoded.get("status", "unsupported")
-                context.update({"scope": "application_payload", "payload_offset": None, "decoder_status": status})
+                context.update({"scope": "application_payload", "coordinate_system": "application_payload", "payload_offset": None, "decoder_status": status})
                 context["limitation"] = f"application payload unavailable: {status}; use raw packet analysis to inspect bytes"
         if view_limitation := (views[-1].limitation if views and views[-1].packet is packet else None):
             context["limitation"] = view_limitation
@@ -217,19 +223,29 @@ def _packet_json(packet: Packet, payload_budget: int | None = None) -> dict:
     item["payload_truncated"] = len(payload) != len(packet.payload)
     item["raw_payload"] = payload.hex()
     decoded = decode_packet(packet)
-    transport = decoded.get("transport") or decoded.get("network", {}).get("transport")
-    if isinstance(transport, dict) and transport.get("status") == "ok":
-        start = int(transport.get("payload_offset", 0))
-        length = int(transport.get("payload_length", 0))
-        application = packet.payload[start:start + length]
+    application, application_meta = coordinate_bytes(packet, "application_payload")
+    application_length = len(application) if application is not None else 0
+    if application is not None and application_meta["available"]:
+        start = int(application_meta.get("absolute_offset") or 0)
         application = application[: max(0, payload_budget // 2)]
         item["application_payload"] = application.hex()
-        item["application_payload_truncated"] = len(application) != length
+        item["application_payload_truncated"] = len(application) != application_length
         item["application_payload_offset"] = start
+        item["application_payload_available"] = True
     else:
-        item["application_payload"] = payload.hex()
-        item["application_payload_truncated"] = item["payload_truncated"]
-        item["application_payload_offset"] = 0
+        item["application_payload"] = ""
+        item["application_payload_truncated"] = False
+        item["application_payload_offset"] = None
+        item["application_payload_available"] = False
+    item["coordinate_metadata"] = {
+        "raw_packet": {"available": True, "length": len(payload), "truncated": item["payload_truncated"]},
+        "application_payload": {
+            "available": bool(application_meta.get("available")),
+            "offset": application_meta.get("absolute_offset"),
+            "length": application_length,
+            "truncated": bool(application_meta.get("truncated")) or item["application_payload_truncated"],
+        },
+    }
     item["protocol"] = decoded
     return item
 
@@ -458,7 +474,7 @@ def _what_would_help(field_type: str) -> list[str]:
 def _make_field(field_type: str, views: list[_View], relative: int, width: int, endian: str, value: Any, confidence: float, rationale: str, contradictions: list[dict], alternatives: list[str], caveat: str) -> dict:
     primary = views[0]
     evidence = [{"packet_ids": [view.packet.index for view in views[:64]], "values": [view.data[relative:relative + width].hex() for view in views[:64]], "rationale": rationale}]
-    field = FieldHypothesis(field_type, primary.packet.index, primary.absolute_base + relative, primary.payload_relative_base + relative if primary.payload_relative_base is not None else None, width * 8, endian, value, confidence, evidence, contradictions, len(views), "hypothesis", alternatives)
+    field = FieldHypothesis(field_type, primary.packet.index, primary.absolute_base + relative, primary.payload_relative_base + relative if primary.payload_relative_base is not None else None, width * 8, endian, value, confidence, evidence, contradictions, len(views), "hypothesis", alternatives, primary.scope)
     result = field.as_dict()
     result.update({"id": f"{field_type}:{primary.packet.index}:{field.absolute_offset}:{width}:{endian}", "kind": "counter" if field_type == "sequence_counter" else field_type, "offset": field.absolute_offset, "width": width, "caveats": [caveat], "what_would_help": _what_would_help(field_type), "evidence_quality": {"basis": "observed_packet_bytes", "independent_samples": len(views), "assumptions": ["packet order is meaningful"] if field_type == "sequence_counter" else []}, "locations": [{"packet_id": view.packet.index, "absolute_offset": view.absolute_base + relative, "payload_relative_offset": view.payload_relative_base + relative if view.payload_relative_base is not None else None} for view in views[:128]]})
     return result
@@ -478,7 +494,7 @@ def _crc_hypotheses(views: list[_View], limits: Limits, cancel: Callable[[], boo
         view = views[0]
         values = [view.data[evidence.location:evidence.location + evidence.width].hex()]
         confidence = min(0.96, 0.5 + 0.08 * math.log2(max(2, evidence.samples)) - 0.015 * math.log2(max(2, result.candidates_tested)))
-        field = FieldHypothesis("crc" if candidate.algorithm.startswith("CRC") else "checksum", view.packet.index, view.absolute_base + evidence.location, view.payload_relative_base + evidence.location if view.payload_relative_base is not None else None, evidence.width * 8, evidence.byte_order, values, confidence, [{"packet_ids": [item.packet.index for item in views[:64]], "rationale": f"{candidate.algorithm} matched {evidence.matches}/{evidence.samples} independent samples", "covered_range": list(evidence.covered_range), "covered_ranges": [list(item) for item in evidence.covered_ranges], "location_mode": evidence.location_mode, "mismatches": list(evidence.mismatches)}], [], evidence.samples, "hypothesis", ["another checksum range", "coincidental match"])
+        field = FieldHypothesis("crc" if candidate.algorithm.startswith("CRC") else "checksum", view.packet.index, view.absolute_base + evidence.location, view.payload_relative_base + evidence.location if view.payload_relative_base is not None else None, evidence.width * 8, evidence.byte_order, values, confidence, [{"packet_ids": [item.packet.index for item in views[:64]], "rationale": f"{candidate.algorithm} matched {evidence.matches}/{evidence.samples} independent samples", "covered_range": list(evidence.covered_range), "covered_ranges": [list(item) for item in evidence.covered_ranges], "location_mode": evidence.location_mode, "mismatches": list(evidence.mismatches)}], [], evidence.samples, "hypothesis", ["another checksum range", "coincidental match"], view.scope)
         item = field.as_dict()
         byte_order = "big" if evidence.width == 1 else evidence.byte_order
         locations = list(evidence.locations) or [evidence.location]
@@ -504,7 +520,10 @@ def _clean_annotations(annotations: list[dict]) -> list[dict]:
             end = max(start, int(item.get("end", start + 1)))
         except (TypeError, ValueError):
             continue
-        cleaned.append({"label": label, "start": start, "end": end, "source": "manual", "field_type": str(item.get("field_type", "custom"))[:40], "endian": str(item.get("endian", "unknown"))[:12], "status": str(item.get("status", "hypothesis"))[:20]})
+        coordinate_system = str(item.get("coordinate_system", "application_payload"))
+        if coordinate_system not in {"raw_packet", "application_payload"}:
+            coordinate_system = "application_payload"
+        cleaned.append({"label": label, "start": start, "end": end, "coordinate_system": coordinate_system, "source": "manual", "field_type": str(item.get("field_type", "custom"))[:40], "endian": str(item.get("endian", "unknown"))[:12], "status": str(item.get("status", "hypothesis"))[:20]})
     return cleaned
 
 

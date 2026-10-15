@@ -20,7 +20,11 @@ const packets = () => {
 const selectedPacket = () => packets().find((packet) => packet.index === Number($("#packet-select").value));
 const packetOptions = (prior) => { const available = packets(); const query = state.packetQuery.trim().toLowerCase(); const filtered = query ? available.filter((packet) => `${packet.index} ${packet.source_name || ""}`.toLowerCase().includes(query)) : available; const bounded = filtered.slice(0, 200); if (!query && prior >= 0 && available.some((packet) => packet.index === prior) && !bounded.some((packet) => packet.index === prior) && bounded.length) bounded[bounded.length - 1] = available.find((packet) => packet.index === prior); return bounded; };
 const hexBytes = (value) => (String(value || "").match(/[0-9a-f]{2}/gi) || []).map((part) => part.toLowerCase());
-const bytesOf = (packet) => hexBytes($("#payload-mode")?.value === "raw" ? (packet.raw_payload || packet.payload) : (packet.application_payload || packet.payload));
+const bytesOf = (packet) => {
+  if ($("#payload-mode")?.value === "raw") return hexBytes(packet.raw_payload ?? packet.payload);
+  if (packet.application_payload_available === false) return [];
+  return hexBytes(packet.application_payload ?? packet.payload);
+};
 const setStatus = (text, error = false) => { $("#status").textContent = text; $("#status").classList.toggle("error", error); };
 const sourceKey = () => `packetscope:annotations:${contentHash(state.result?.packets || [])}`;
 function contentHash(value) { let hash = 2166136261; const text = JSON.stringify(value); for (let i = 0; i < text.length; i += 1) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16).padStart(8, "0"); }
@@ -46,7 +50,7 @@ $("#sync-scroll").addEventListener("change", renderComparison);
 $("#compare-mode").addEventListener("change", () => { state.compare.mode = $("#compare-mode").value; renderComparison(); });
 $("#compare-select").addEventListener("change", () => { state.compare.ids = Array.from($("#compare-select").selectedOptions).map((option) => Number(option.value)); state.compare.cursor = 0; renderComparison(); });
 $("#hypothesis-type").addEventListener("change", renderHypotheses); $("#hypothesis-confidence").addEventListener("input", renderHypotheses); $("#evidence-only").addEventListener("change", renderHypotheses);
-$("#annotation-form").addEventListener("submit", (event) => { event.preventDefault(); const start = Number($("#annotation-start").value); const width = Number($("#annotation-width").value); const label = $("#annotation-label").value.trim(); if (!label || !Number.isInteger(start) || start < 0 || !Number.isInteger(width) || width < 1) { setStatus("Annotation label, offsets, and width must be valid.", true); return; } const annotation = { label, field_type: $("#annotation-type").value, endian: $("#annotation-endian").value, start, end: start + width, source: "manual", status: "confirmed" }; pushUndo(); if (state.editingAnnotation === null) state.annotations.push(annotation); else state.annotations[state.editingAnnotation] = annotation; state.editingAnnotation = null; $("#annotation-submit").textContent = "Add annotation"; renderAnnotations(); setStatus("Manual annotation updated; export to persist it."); });
+$("#annotation-form").addEventListener("submit", (event) => { event.preventDefault(); const start = Number($("#annotation-start").value); const width = Number($("#annotation-width").value); const label = $("#annotation-label").value.trim(); if (!label || !Number.isInteger(start) || start < 0 || !Number.isInteger(width) || width < 1) { setStatus("Annotation label, offsets, and width must be valid.", true); return; } const annotation = { label, field_type: $("#annotation-type").value, endian: $("#annotation-endian").value, start, end: start + width, coordinate_system: $("#payload-mode").value === "raw" ? "raw_packet" : "application_payload", source: "manual", status: "confirmed" }; pushUndo(); if (state.editingAnnotation === null) state.annotations.push(annotation); else state.annotations[state.editingAnnotation] = annotation; state.editingAnnotation = null; $("#annotation-submit").textContent = "Add annotation"; renderAnnotations(); setStatus("Manual annotation updated; export to persist it."); });
 document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => { document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item === button)); document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab)); }));
 $("#flow-select").addEventListener("change", () => { state.flowId = $("#flow-select").value; requestScopedAnalysis(); });
 $("#direction-select").addEventListener("change", () => { state.direction = $("#direction-select").value; requestScopedAnalysis(); });
@@ -81,8 +85,8 @@ async function cancelCurrentJob() { const id = state.jobId; state.controller?.ab
 function downloadDemo(format) { const profile = $("#demo-profile").value; const link = document.createElement("a"); link.href = `/api/demo/download?profile=${encodeURIComponent(profile)}&format=${format}`; link.download = `packetscope-${profile}.${format}`; link.click(); setStatus(`${format.toUpperCase()} demo generated locally.`); }
 
 function validateProject(value) { if (!value || typeof value !== "object" || !Array.isArray(value.packets) || value.packets.length > 100000) throw new Error("packet list is missing or too large"); if (value.schema_version !== undefined && value.schema_version !== 2) throw new Error("unsupported schema version"); if (Array.isArray(value.annotations) && value.annotations.length > 1000) throw new Error("too many annotations"); if (value.project?.schema_version !== undefined && value.project.schema_version !== 1) throw new Error("unsupported project schema version"); }
-function validateSchema(value) { if (!value || typeof value !== "object" || value.schema_version !== 1 || !Array.isArray(value.fields) || value.fields.length > 1000) throw new Error("unsupported schema version or fields are missing"); value.fields.forEach((field) => { if (!field || typeof field.name !== "string" || !field.name.trim() || !Number.isInteger(field.offset) || field.offset < 0 || !Number.isInteger(field.width) || field.width < 1 || field.width > 16 * 1024 * 1024 || !["big", "little", "unknown"].includes(field.endian || "unknown")) throw new Error("schema field has an invalid offset, width, or endian"); }); }
-function applySchema(schema) { return packets().slice(0, 100000).map((packet) => { const bytes = bytesOf(packet); return { packetId: packet.index, fields: schema.fields.map((field) => { const raw = bytes.slice(field.offset, field.offset + field.width); let value = raw.join(""); if (raw.length === field.width && ["big", "little"].includes(field.endian) && field.width <= 8) { const ordered = field.endian === "little" ? raw.slice().reverse() : raw; value = Number.parseInt(ordered.join(""), 16); } return { name: field.name, value, available: raw.length === field.width }; }) }; }); }
+function validateSchema(value) { if (!value || typeof value !== "object" || value.schema_version !== 1 || !Array.isArray(value.fields) || value.fields.length > 1000 || !["raw_packet", "application_payload"].includes(value.coordinate_system || "raw_packet")) throw new Error("unsupported schema version, coordinate system, or fields are missing"); value.fields.forEach((field) => { if (!field || typeof field.name !== "string" || !field.name.trim() || !Number.isInteger(field.offset) || field.offset < 0 || !Number.isInteger(field.width) || field.width < 1 || field.width > 16 * 1024 * 1024 || !["big", "little", "unknown"].includes(field.endian || "unknown") || !["raw_packet", "application_payload"].includes(field.coordinate_system || value.coordinate_system || "raw_packet")) throw new Error("schema field has an invalid offset, width, endian, or coordinate system"); const type = String(field.type || "").toUpperCase(); if ((type === "UINT32" && field.width !== 4) || ((type === "UINT64" || type === "INT64") && field.width !== 8)) throw new Error("schema integer type does not match field width"); }); }
+function applySchema(schema) { return PacketScopeSchema.apply(schema, packets()); }
 function validAnnotation(item) { return item && typeof item === "object" && typeof item.label === "string" && item.label.trim() && Number.isInteger(item.start) && item.start >= 0 && Number.isInteger(item.end) && item.end > item.start && item.end - item.start <= 16 * 1024 * 1024; }
 function loadResult(result, options = {}) { validateProject(result); const priorAnnotations = state.annotations; state.result = result; state.selectedHypothesis = null; if (!options.preserveAnnotations) { state.schema = null; state.schemaValues = []; } const imported = Array.isArray(result.annotations) ? result.annotations.filter(validAnnotation).slice(0, 1000) : []; let saved = []; if (!options.preserveAnnotations && options.restoreLocal !== false) { try { const candidate = JSON.parse(localStorage.getItem(sourceKey()) || "[]"); saved = Array.isArray(candidate) ? candidate.filter(validAnnotation).slice(0, 1000) : []; } catch { saved = []; } } state.annotations = options.preserveAnnotations ? priorAnnotations.slice(0, 1000) : (imported.length ? imported : saved); state.undo = []; state.redo = []; state.editingAnnotation = null; $("#annotation-submit").textContent = "Add annotation"; state.packetQuery = options.preserveAnnotations ? state.packetQuery : ""; $("#packet-search").value = state.packetQuery; state.demoProfile = result.demo?.profile || null; $("#results").hidden = false; $("#demo-evaluate").hidden = !state.demoProfile; render(); }
 function render() {
@@ -112,7 +116,65 @@ function renderCrc() { const view = $("#crc-view"); view.replaceChildren(); cons
 function renderAnnotations() { const view = $("#annotations-view"); view.replaceChildren(); state.annotations.forEach((annotation, index) => { const item = node("li"); item.append(node("span", `${annotation.label} · 0x${annotation.start.toString(16)}–0x${annotation.end.toString(16)}`)); const actions = node("span", undefined, "annotation-actions"); const edit = node("button", "Edit", "secondary"); edit.type = "button"; edit.addEventListener("click", () => { state.editingAnnotation = index; $("#annotation-label").value = annotation.label; $("#annotation-type").value = annotation.field_type || "custom"; $("#annotation-endian").value = annotation.endian || "unknown"; $("#annotation-start").value = annotation.start; $("#annotation-width").value = Math.max(1, annotation.end - annotation.start); $("#annotation-submit").textContent = "Update annotation"; $("#annotation-label").focus(); }); const remove = node("button", "Remove"); remove.type = "button"; remove.addEventListener("click", () => { pushUndo(); state.annotations.splice(index, 1); if (state.editingAnnotation === index) { state.editingAnnotation = null; $("#annotation-submit").textContent = "Add annotation"; } renderAnnotations(); }); actions.append(edit, remove); item.append(actions); view.append(item); }); }
 function pushUndo() { state.undo.push(JSON.stringify(state.annotations)); if (state.undo.length > 30) state.undo.shift(); state.redo = []; }
 function exportProject() { if (!state.result) return; const copy = JSON.parse(JSON.stringify(state.result)); copy.annotations = state.annotations; copy.project = { schema_version: 1, content_hash: contentHash(copy.packets) }; const blob = new Blob([JSON.stringify(copy, null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${state.result.source?.name || "packetscope-project"}.json`; link.click(); URL.revokeObjectURL(link.href); setStatus("Project exported with annotations."); }
-function exportProtocolSchema() { if (!state.result) return; const fields = []; (state.result.hypotheses || []).forEach((item) => fields.push({ name: item.field_type || item.kind || "field", type: item.field_type || item.kind || "custom", offset: Number(item.absolute_offset ?? item.offset ?? 0), width: Number(item.width || (item.width_bits || 8) / 8), endian: item.endian || "unknown", observed_values: item.candidate_value ?? [], constraints: item.interpretation_group || {}, origin: "inferred", review_status: "hypothesis", evidence_refs: (item.evidence || []).map((evidence) => evidence.packet_ids || []), known_limitations: [...(item.caveats || []), ...(item.what_would_help || [])] })); state.annotations.forEach((item) => fields.push({ name: item.label, type: item.field_type || "custom", offset: item.start, width: item.end - item.start, endian: item.endian || "unknown", observed_values: [], constraints: [], origin: "manual", review_status: item.status || "confirmed", evidence_refs: [], known_limitations: [] })); fields.sort((left, right) => left.offset - right.offset || left.width - right.width || left.name.localeCompare(right.name)); const schema = { schema_version: 1, name: "PacketScope protocol", fields, source: { packet_count: allPackets().length, analysis_scope: state.result.analysis?.scope || "unknown" }, limitations: ["Descriptions only; no executable parser is generated.", "Inferred fields remain hypotheses until manually reviewed."] }; const blob = new Blob([JSON.stringify(schema, null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${state.result.source?.name || "packetscope-protocol"}.schema.json`; link.click(); URL.revokeObjectURL(link.href); setStatus("Versioned protocol schema exported; inferred fields remain hypotheses."); }
+function exportProtocolSchema() {
+  if (!state.result) return;
+  const coordinateSystem = $("#payload-mode").value === "raw" ? "raw_packet" : "application_payload";
+  const fields = [];
+  (state.result.hypotheses || []).forEach((item) => {
+    const fieldCoordinateSystem = item.coordinate_system || coordinateSystem;
+    const offset = fieldCoordinateSystem === "application_payload"
+      ? Number(item.payload_relative_offset ?? item.absolute_offset ?? item.offset ?? 0)
+      : Number(item.absolute_offset ?? item.offset ?? 0);
+    fields.push({
+      name: item.field_type || item.kind || "field",
+      type: item.field_type || item.kind || "custom",
+      offset,
+      width: Number(item.width || (item.width_bits || 8) / 8),
+      endian: item.endian || "unknown",
+      coordinate_system: fieldCoordinateSystem,
+      observed_values: item.candidate_value ?? [],
+      constraints: item.interpretation_group || {},
+      origin: "inferred",
+      review_status: "hypothesis",
+      evidence_refs: (item.evidence || []).map((evidence) => evidence.packet_ids || []),
+      known_limitations: [...(item.caveats || []), ...(item.what_would_help || [])],
+    });
+  });
+  state.annotations.forEach((item) => fields.push({
+    name: item.label,
+    type: item.field_type || "custom",
+    offset: item.start,
+    width: item.end - item.start,
+    endian: item.endian || "unknown",
+    coordinate_system: item.coordinate_system || coordinateSystem,
+    observed_values: [],
+    constraints: [],
+    origin: "manual",
+    review_status: item.status || "confirmed",
+    evidence_refs: [],
+    known_limitations: [],
+  }));
+  fields.sort((left, right) => left.offset - right.offset || left.width - right.width || left.name.localeCompare(right.name));
+  const schema = {
+    schema_version: 1,
+    name: "PacketScope protocol",
+    coordinate_system: coordinateSystem,
+    fields,
+    source: { packet_count: allPackets().length, analysis_scope: state.result.analysis?.scope || "unknown" },
+    limitations: [
+      "Descriptions only; no executable parser is generated.",
+      "Inferred fields remain hypotheses until manually reviewed.",
+      "Offsets are relative to the declared coordinate system.",
+    ],
+  };
+  const blob = new Blob([JSON.stringify(schema, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${state.result.source?.name || "packetscope-protocol"}.schema.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  setStatus("Versioned protocol schema exported; inferred fields remain hypotheses.");
+}
 async function evaluateDemo() { if (!state.demoProfile || !state.result) return; $("#demo-evaluate").disabled = true; try { const payload = { profile: state.demoProfile, evaluation_id: state.result.demo?.evaluation_id }; if (!payload.evaluation_id) payload.result = state.result; const response = await fetch("/api/demo/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); const evaluation = await response.json(); if (!response.ok) throw new Error(evaluation.error || "evaluation failed"); const view = $("#evaluation-view"); view.hidden = false; view.replaceChildren(node("strong", `${evaluation.trusted ? "Trusted server reference" : "Untrusted client comparison"} · precision ${formatMetric(evaluation.precision)} · recall ${formatMetric(evaluation.recall)} · F1 ${formatMetric(evaluation.f1)}`), node("p", `${evaluation.matched} matched · ${evaluation.unmatched} unmatched hypotheses · ${evaluation.missed} missed ground-truth fields. ${evaluation.trusted ? "The server re-evaluated its stored analysis identity; client edits were not used." : "Client-submitted metrics are comparative only."}`)); setStatus("Reference evaluation is now visible after investigation."); } catch (error) { setStatus(error.message, true); } finally { $("#demo-evaluate").disabled = false; } }
 function formatMetric(value) { return value === null || value === undefined ? "N/A" : `${Math.round(value * 100)}%`; }
 

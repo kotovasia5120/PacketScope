@@ -70,6 +70,7 @@ class FieldHypothesis:
     sample_count: int = 0
     status: str = "hypothesis"
     alternative_interpretations: list[str] = field(default_factory=list)
+    coordinate_system: str = "raw_packet"
 
     def __post_init__(self) -> None:
         if self.absolute_offset < 0:
@@ -82,6 +83,8 @@ class FieldHypothesis:
             raise ValueError("confidence must be between 0 and 1")
         if self.status.upper() == "CONFIRMED":
             raise ValueError("automatic field hypotheses cannot be confirmed")
+        if not isinstance(self.coordinate_system, str) or self.coordinate_system not in {"raw_packet", "application_payload"}:
+            raise ValueError("coordinate_system must be raw_packet or application_payload")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -98,6 +101,7 @@ class FieldHypothesis:
             "sample_count": self.sample_count,
             "status": self.status,
             "alternative_interpretations": self.alternative_interpretations,
+            "coordinate_system": self.coordinate_system,
         }
 
 

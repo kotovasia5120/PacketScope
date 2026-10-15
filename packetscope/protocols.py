@@ -12,6 +12,9 @@ import struct
 from packetscope.models import Packet
 
 
+COORDINATE_SYSTEMS = {"raw_packet", "application_payload"}
+
+
 def decode_packet(packet: Packet) -> dict:
     if packet.link_type not in (1, 101):
         return {
@@ -60,6 +63,73 @@ def decode_packet(packet: Packet) -> dict:
             "payload_length": max(0, len(packet.payload) - offset),
         }
     return result
+
+
+def coordinate_bytes(packet: Packet, coordinate_system: str) -> tuple[bytes | None, dict]:
+    """Return bounded bytes for a declared coordinate system.
+
+    ``raw_packet`` is always the captured packet byte space.  The
+    ``application_payload`` space is available only when the packet has no
+    link metadata (so the imported bytes are already application data) or a
+    decoded transport payload.  Unknown or undecodable link types are
+    deliberately unavailable instead of silently falling back to raw bytes.
+
+    A truncated transport may still expose the bytes that were captured; a
+    caller must check each requested range against the returned bytes before
+    producing a value.
+    """
+    if not isinstance(coordinate_system, str) or coordinate_system not in COORDINATE_SYSTEMS:
+        raise ValueError("unsupported coordinate system")
+    if coordinate_system == "raw_packet":
+        return packet.payload, {
+            "coordinate_system": "raw_packet",
+            "available": True,
+            "absolute_offset": 0,
+            "truncated": packet.original_length is not None and packet.original_length > len(packet.payload),
+        }
+    if packet.link_type is None:
+        return packet.payload, {
+            "coordinate_system": "application_payload",
+            "available": True,
+            "absolute_offset": 0,
+            "truncated": False,
+        }
+    decoded = decode_packet(packet)
+    transport = decoded.get("transport") or (
+        decoded.get("network", {}).get("transport")
+        if isinstance(decoded.get("network"), dict) else None
+    )
+    if not isinstance(transport, dict) or transport.get("status") != "ok":
+        return None, {
+            "coordinate_system": "application_payload",
+            "available": False,
+            "absolute_offset": None,
+            "truncated": True,
+        }
+    try:
+        start = int(transport["payload_offset"])
+        length = int(transport["payload_length"])
+    except (KeyError, TypeError, ValueError):
+        return None, {
+            "coordinate_system": "application_payload",
+            "available": False,
+            "absolute_offset": None,
+            "truncated": True,
+        }
+    if start < 0 or length < 0 or start > len(packet.payload):
+        return None, {
+            "coordinate_system": "application_payload",
+            "available": False,
+            "absolute_offset": None,
+            "truncated": True,
+        }
+    end = min(len(packet.payload), start + length)
+    return packet.payload[start:end], {
+        "coordinate_system": "application_payload",
+        "available": True,
+        "absolute_offset": start,
+        "truncated": end < start + length or bool(transport.get("truncated")),
+    }
 
 
 def _decode_ip(data: bytes, offset: int) -> dict:

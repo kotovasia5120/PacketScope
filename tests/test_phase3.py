@@ -63,8 +63,13 @@ class Phase3CorpusTests(unittest.TestCase):
         magic = next(item for item in payload_result["hypotheses"] if item["field_type"] == "magic_bytes")
         self.assertEqual(magic["absolute_offset"], 42)
         self.assertEqual(magic["payload_relative_offset"], 0)
+        self.assertEqual(magic["coordinate_system"], "application_payload")
+        self.assertEqual(payload_result["analysis"]["coordinate_system"], "application_payload")
+        self.assertEqual(payload_result["packets"][0]["application_payload_offset"], 42)
+        self.assertTrue(payload_result["packets"][0]["application_payload_available"])
         raw_result = analyze_packets(packets, analyze_raw=True)
         self.assertEqual(raw_result["analysis"]["scope"], "raw_packet")
+        self.assertEqual(raw_result["analysis"]["coordinate_system"], "raw_packet")
         self.assertTrue(raw_result["analysis"]["contexts"][0]["scope"] == "raw_packet")
 
 
