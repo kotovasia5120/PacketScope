@@ -73,3 +73,27 @@ so the pinned Python 3.12.7, Docker, and hosted-CI gates require a later run.
 - Add indexed capture access and CLI batch reports beyond the bounded profiles.
 - Add optional local plugin hooks with a documented, sandbox-free boundary.
 - Improve keyboard navigation and visual filtering for large hypothesis sets.
+
+## Phase 6 — release candidate hardening
+
+Implemented in the current working tree:
+
+- Fixed and regression-tested the reference-evaluation HTTP endpoint, including
+  bounded malformed, incomplete, oversized, unavailable, and internal-error
+  handling.
+- Reused the existing single-worker jobs to reanalyze uploaded captures for a
+  validated flow/direction scope. The browser hides stale hypotheses while a
+  scoped result is pending and labels display-only restored-project filtering.
+- Added deterministic multi-flow PCAP/manifest coverage for IPv4, IPv6, UDP,
+  TCP, duplicate/out-of-order segments, unsupported input, and incomplete
+  records.
+- Expanded real Chromium acceptance to five tests and bounded packet navigation
+  to a searchable 200-option window.
+- Added job raw-payload retention and result-size limits with cancellation and
+  recovery tests.
+
+Remaining release gates are environmental rather than silently assumed:
+Python 3.12.7 execution, Docker build/offline test, and a hosted GitHub Actions
+run on this HEAD must be recorded before claiming a complete competition
+release. External importer validation is documented separately and does not
+claim application-protocol reverse engineering.

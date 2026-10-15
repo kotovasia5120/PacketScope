@@ -5,7 +5,7 @@ unknown binary protocols. Load synthetic or real packet captures, compare bytes,
 inspect HEX/ASCII, and record evidence-backed hypotheses without sending data to
 cloud AI or external APIs.
 
-> **Status:** Phase 5 reliability slice. Automatic findings remain heuristic
+> **Status:** Phase 6 release-candidate slice. Automatic findings remain heuristic
 > hypotheses, not confirmed protocol facts.
 
 ## What works in this iteration
@@ -31,6 +31,12 @@ cloud AI or external APIs.
   reassembly; unsupported link types remain raw and explicitly unsupported.
 - Direction-aware IPv4/IPv6 TCP/UDP flow grouping with packet identity,
   retransmission/out-of-order notes, and explicit no-TCP-reassembly limits.
+- Scoped server-side reanalysis for selected flows and directions, with stale
+  browser responses ignored and display-only filtering clearly labeled when a
+  restored project has no source capture.
+- Bounded job payload retention (64 MiB total by default), terminal result
+  retention limits, prompt raw-payload release, and safe oversized-result
+  rejection.
 - Versioned `default`, `fast`, `deep`, and custom analysis profiles with bounded
   budgets, SHA-256 input identity, profile fingerprints, and reproducibility
   metadata in every analysis report.
@@ -103,24 +109,25 @@ that older run.
 
 | Command or gate | Result |
 | --- | --- |
-| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 62 tests on Python 3.12.7 |
-| `python3 -m unittest discover -s tests -p 'test_*.py'` | **PASS** — 62 tests on host Python 3.11.2 compatibility check |
-| `python3 -m compileall -q packetscope tests` | **PASS** |
+| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 77 tests on Python 3.12.7 |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | **PASS** — 77 tests on host Python 3.11.2 compatibility check |
 | `node --check packetscope/static/app.js` plus E2E JS files | **PASS** |
-| `npm run e2e` with pinned Chromium 131 / Python 3.12.7 server | **PASS** — 4 browser tests |
+| `npm run e2e` with local Chromium server | **PASS** — 5 browser tests |
 | HTTP `/api/health` smoke test | **PASS** — real local server |
-| `make test` with default host `python3` | **BLOCKED** — host is 3.11.2; exact pinned runtime command above passes |
+| `make test` with default host `python3` | **BLOCKED** — host is 3.11.2; use the explicit pinned-runtime command above |
 | Docker build/offline container | **BLOCKED** — Docker daemon is unavailable in this environment |
 | New GitHub Actions run | **UNVERIFIED** — no push was authorized |
 
 The mandatory tests are offline and use only deterministic synthetic fixtures. CRC reference values and parameters are documented in [`docs/crc.md`](docs/crc.md).
 
 The independent holdout corpus is not available to the analyzer at runtime.
-Measured post-analysis evaluation (heuristic detector metrics, not
-probabilities) is: A precision 0.400 / recall 1.000 / F1 0.571; B precision
-0.429 / recall 1.000 / F1 0.600; C and D have no applicable recall; the
-independent holdout has precision 0.222 / recall 0.667 / F1 0.333. These
-figures expose false positives rather than hiding them.
+Run `python3 -m tests.phase6_evaluate` for the reproducible table. The
+measured post-analysis evaluation (heuristic detector metrics, not
+probabilities) remains: A precision 0.400 / recall 1.000 / F1 0.571; B
+precision 0.429 / recall 1.000 / F1 0.600; C and D have no applicable recall;
+the independent holdout has precision 0.222 / recall 0.667 / F1 0.333. The
+false-positive breakdown and limitations are documented in
+[`docs/phase6-evaluation.md`](docs/phase6-evaluation.md).
 
 ## Browser E2E
 
@@ -155,9 +162,24 @@ The CLI can explicitly inspect raw packet bytes with `--raw`; otherwise decoded 
 
 Flow selectors in the browser operate on the normalized flow metadata returned
 by the analysis. `forward` and `reverse` are relative to canonical endpoint A
-and B; selecting a direction changes the visible packet scope without reloading
-the capture. TCP segments remain packet-scoped because stream reassembly is not
-implemented.
+and B. For an uploaded capture, selecting a flow or direction submits the same
+source through the bounded analysis job with validated scope parameters; packet
+presentation, hypotheses, CRC evidence, and packet IDs then come from that
+scope. Stale scoped responses cannot overwrite a newer selection. A restored
+JSON project has no source capture, so its selectors are explicitly marked
+display-only. TCP segments remain packet-scoped because stream reassembly is
+not implemented. The deterministic Phase-6 corpus and manifest are under
+`tests/fixtures/phase6_multiflow*`.
+
+## External fixtures and release evidence
+
+Importer-only validation against small public tcpdump, PcapPlusPlus,
+Wireshark, and Kaitai samples is recorded in
+[`docs/external-fixture-validation.md`](docs/external-fixture-validation.md).
+The files are not vendored. Browser screenshots, traces, and performance JSON
+are generated under the ignored `test-artifacts/` directory by the real
+Chromium suite. Phase-6 acceptance status and remaining Docker/CI blockers are
+tracked in [`docs/phase6-progress.md`](docs/phase6-progress.md).
 
 
 ## License
