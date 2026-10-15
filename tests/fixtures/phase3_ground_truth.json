@@ -1,6 +1,62 @@
 {
-  "set_a": {"fields": ["magic", "message_type", "sequence_counter", "length", "crc"]},
-  "set_b": {"fields": ["magic", "flags", "sequence_counter", "crc"]},
-  "set_c": {"alignment": "insertions-and-deletions"},
-  "set_d": {"crc": false, "confirmed": false}
+  "set_a": {
+    "expected": [
+      {
+        "field_type": "magic_bytes",
+        "absolute_offset": 0,
+        "width_bits": 16
+      },
+      {
+        "field_type": "sequence_counter",
+        "absolute_offset": 3,
+        "width_bits": 16,
+        "endian": "big"
+      },
+      {
+        "field_type": "length_field",
+        "absolute_offset": 5,
+        "width_bits": 16,
+        "endian": "big"
+      },
+      {
+        "field_type": "crc",
+        "algorithm": "CRC-16/CCITT-FALSE",
+        "endian": "big",
+        "location_mode": "from_end"
+      }
+    ]
+  },
+  "set_b": {
+    "expected": [
+      {
+        "field_type": "bit_flags",
+        "absolute_offset": 1,
+        "width_bits": 8
+      },
+      {
+        "field_type": "sequence_counter",
+        "absolute_offset": 2,
+        "width_bits": 32,
+        "endian": "little"
+      },
+      {
+        "field_type": "crc",
+        "algorithm": "CRC-32/ISO-HDLC",
+        "endian": "little"
+      }
+    ]
+  },
+  "set_c": {
+    "expected": [],
+    "observations": [
+      "alignment"
+    ]
+  },
+  "set_d": {
+    "expected": [],
+    "assertions": {
+      "crc_candidates": 0,
+      "confirmed": 0
+    }
+  }
 }
