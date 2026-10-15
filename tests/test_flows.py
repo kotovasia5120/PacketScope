@@ -103,6 +103,39 @@ class FlowGroupingTests(unittest.TestCase):
         self.assertEqual([packet["packet_id"] for packet in result["flows"][0]["packets"]], [0, 1])
         self.assertEqual(result["flow_selection"]["direction"], "forward")
 
+    def test_scoped_analysis_hypotheses_only_reference_selected_direction(self):
+        left = bytes((192, 0, 2, 71))
+        right = bytes((192, 0, 2, 81))
+        packets = []
+        for index in range(3):
+            payload = b"\xfa\x01" + index.to_bytes(2, "big") + b"F" * (index + 2)
+            packets.append(Packet(index, ethernet(ipv4_transport(udp(3100, 4100, payload), 17, left, right), 0x0800), link_type=1))
+        for index in range(3):
+            payload = b"\xfb\x02" + index.to_bytes(2, "little") + b"R" * (index + 2)
+            packet_id = index + 3
+            packets.append(Packet(packet_id, ethernet(ipv4_transport(udp(4100, 3100, payload), 17, right, left), 0x0800), link_type=1))
+
+        forward = analyze_packets(packets, selected_direction="forward")
+        reverse = analyze_packets(packets, selected_direction="reverse")
+        self.assertEqual(forward["observations"]["analysis_packet_count"], 3)
+        self.assertEqual(reverse["observations"]["analysis_packet_count"], 3)
+        self.assertEqual([packet["index"] for packet in forward["packets"]], [0, 1, 2])
+        self.assertEqual([packet["index"] for packet in reverse["packets"]], [3, 4, 5])
+        self.assertEqual(forward["flow_selection"]["direction"], "forward")
+        self.assertEqual(reverse["flow_selection"]["direction"], "reverse")
+        self.assertNotEqual(forward["hypotheses"], reverse["hypotheses"])
+        for result, allowed in ((forward, {0, 1, 2}), (reverse, {3, 4, 5})):
+            for hypothesis in result["hypotheses"]:
+                for evidence in hypothesis.get("evidence", []):
+                    self.assertTrue(set(evidence.get("packet_ids", [])) <= allowed)
+
+    def test_scoped_analysis_rejects_unknown_flow(self):
+        source = bytes((192, 0, 2, 72))
+        destination = bytes((192, 0, 2, 82))
+        packet = Packet(0, ethernet(ipv4_transport(udp(3200, 4200, b"x"), 17, source, destination), 0x0800), link_type=1)
+        with self.assertRaisesRegex(ValueError, "unknown flow_id"):
+            analyze_packets([packet], flow_id="missing-flow")
+
     def test_grouping_limits_and_invalid_direction_are_explicit(self):
         source = bytes((192, 0, 2, 90))
         destination = bytes((192, 0, 2, 91))

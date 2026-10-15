@@ -9,7 +9,7 @@ from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from packetscope.analysis import analyze_packets
 from packetscope.errors import PacketScopeError
@@ -18,6 +18,7 @@ from packetscope.importers import import_bytes
 from packetscope.models import Limits
 from packetscope.demo import demo_capture, demo_corpus
 from packetscope.evaluation import evaluate_result
+from packetscope.flows import normalize_direction
 from packetscope.jobs import AnalysisManager
 
 
@@ -35,19 +36,34 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         self.connection.settimeout(10.0)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urlsplit(self.path)
+        query = parse_qs(parsed.query, keep_blank_values=True)
         if self.path == "/api/health":
             self._json(HTTPStatus.OK, {"status": "ok", "local_only": True})
             return
-        if self.path.startswith("/api/demo/download"):
-            profile = "crc32-le" if "crc32-le" in self.path else "crc16-be"
-            format_name = "pcapng" if "pcapng" in self.path else "pcap"
-            self._binary(HTTPStatus.OK, demo_capture(profile, format_name=format_name, limits=self.server.limits),
+        if parsed.path == "/api/demo/download":
+            profile = query.get("profile", ["crc16-be"])[0]
+            format_name = query.get("format", ["pcap"])[0]
+            try:
+                payload = demo_capture(profile, format_name=format_name, limits=self.server.limits)
+            except (ValueError, TypeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "unknown demo profile or format"})
+                return
+            self._binary(HTTPStatus.OK, payload,
                          "application/vnd.tcpdump.pcap" if format_name == "pcap" else "application/x-pcapng")
             return
-        if self.path.startswith("/api/demo"):
-            profile = "crc32-le" if "crc32-le" in self.path else "crc16-be"
-            demo = demo_corpus(profile, limits=self.server.limits)  # type: ignore[attr-defined]
-            result = analyze_packets(demo["packets"], limits=self.server.limits)
+        if parsed.path == "/api/demo":
+            profile = query.get("profile", ["crc16-be"])[0]
+            direction = query.get("direction", ["both"])[0]
+            flow_id = query.get("flow_id", [None])[0] or None
+            try:
+                direction = normalize_direction(direction)
+                demo = demo_corpus(profile, limits=self.server.limits)  # type: ignore[attr-defined]
+                result = analyze_packets(demo["packets"], limits=self.server.limits,
+                                         selected_direction=direction, flow_id=flow_id)
+            except (ValueError, TypeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid demo selection"})
+                return
             self.server.demo_truth[profile] = demo["ground_truth"]  # type: ignore[attr-defined]
             result["demo"] = {"profile": profile, "metadata": demo["metadata"], "evaluation_available": True}
             self._json(HTTPStatus.OK, result)
@@ -94,9 +110,10 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
             return
         try:
-            name, format_name, payload, analyze_raw = _multipart_file(self.headers.get("Content-Type", ""), body)
+            name, format_name, payload, analyze_raw, selected_direction, flow_id = _multipart_file(self.headers.get("Content-Type", ""), body)
             imported = import_bytes(name, payload, format_name, self.server.limits)  # type: ignore[attr-defined]
             result = analyze_packets(imported.packets, limits=self.server.limits, analyze_raw=analyze_raw,
+                                     selected_direction=selected_direction, flow_id=flow_id,
                                      input_sha256=hashlib.sha256(payload).hexdigest())  # type: ignore[attr-defined]
             result["source"] = {
                 "name": name,
@@ -146,8 +163,11 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             if len(body) != content_length:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
                 return
-            name, format_name, payload, analyze_raw = _multipart_file(self.headers.get("Content-Type", ""), body)
-            job = self.server.analysis_manager.submit(name, format_name, payload, analyze_raw)  # type: ignore[attr-defined]
+            name, format_name, payload, analyze_raw, selected_direction, flow_id = _multipart_file(self.headers.get("Content-Type", ""), body)
+            job = self.server.analysis_manager.submit(
+                name, format_name, payload, analyze_raw,
+                selected_direction=selected_direction, flow_id=flow_id,
+            )  # type: ignore[attr-defined]
             self._json(HTTPStatus.ACCEPTED, {"job_id": job.job_id, "status": job.status, "progress": job.progress})
         except (ValueError, RuntimeError) as exc:
             self._json(HTTPStatus.BAD_REQUEST if isinstance(exc, ValueError) else HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
@@ -291,7 +311,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765, limits: Limits | None = Non
         server.server_close()
 
 
-def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bool]:
+def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bool, str, str | None]:
     if not content_type.lower().startswith("multipart/form-data"):
         raise ValueError("Content-Type must be multipart/form-data")
     message = BytesParser(policy=policy.default).parsebytes(
@@ -301,6 +321,8 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bo
         raise ValueError("invalid multipart body")
     requested_format = "auto"
     analyze_raw = False
+    selected_direction = "both"
+    flow_id: str | None = None
     file_part = None
     field_count = 0
     for part in message.iter_parts():
@@ -313,11 +335,18 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bo
             requested_format = (part.get_content() or "auto").strip().lower()
         if disposition == "form-data" and field_name == "raw":
             analyze_raw = (part.get_content() or "").strip().lower() in {"1", "true", "yes", "on"}
+        if disposition == "form-data" and field_name == "direction":
+            selected_direction = normalize_direction((part.get_content() or "both").strip())
+        if disposition == "form-data" and field_name == "flow_id":
+            candidate = (part.get_content() or "").strip()
+            if len(candidate) > 200:
+                raise ValueError("flow_id exceeds length limit")
+            flow_id = candidate or None
         if disposition == "form-data" and field_name in {"file", "packet"}:
             file_part = part
     if file_part is not None:
         filename = file_part.get_filename() or "upload.bin"
-        return filename[:200], requested_format, file_part.get_payload(decode=True) or b"", analyze_raw
+        return filename[:200], requested_format, file_part.get_payload(decode=True) or b"", analyze_raw, selected_direction, flow_id
     raise ValueError("multipart field 'file' is required")
 
 

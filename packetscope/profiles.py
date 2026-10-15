@@ -220,6 +220,7 @@ def limits_for_profile(base: Limits, profile: AnalysisProfile) -> Limits:
         max_analysis_seconds=profile.timeout,
         max_crc_candidates=int(budget["max_candidates"]), max_crc_ranges=int(budget["max_ranges"]),
         max_flows=base.max_flows, max_samples=profile.maximum_samples,
+        max_job_payload_bytes=base.max_job_payload_bytes, max_retained_jobs=base.max_retained_jobs,
     )
 
 

@@ -63,6 +63,8 @@ def analyze_packets(
             progress(len(packet_list))
 
     flows = group_flows(packet_list, limits=limits)
+    if flow_id is not None and not any(flow.flow_id == flow_id for flow in flows):
+        raise ValueError("unknown flow_id")
     selected_packets = select_flow_packets(
         packet_list,
         selected_direction=selected_direction,

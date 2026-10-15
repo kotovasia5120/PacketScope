@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+import json
 import queue
 import threading
 import time
@@ -26,6 +27,8 @@ class AnalysisJob:
     format_name: str
     payload: bytes
     analyze_raw: bool
+    selected_direction: str = "both"
+    flow_id: str | None = None
     created_at: float = field(default_factory=time.monotonic)
     status: str = "QUEUED"
     progress: int = 0
@@ -53,6 +56,7 @@ class AnalysisManager:
         self._importer = importer or import_bytes
         self._analyzer = analyzer or analyze_packets
         self._jobs: dict[str, AnalysisJob] = {}
+        self._retained_payload_bytes = 0
         self._queue: queue.Queue[AnalysisJob] = queue.Queue(maxsize=max_queue)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -60,12 +64,28 @@ class AnalysisManager:
         self._worker = threading.Thread(target=self._run, name="packetscope-analysis", daemon=True)
         self._worker.start()
 
-    def submit(self, name: str, format_name: str, payload: bytes, analyze_raw: bool) -> AnalysisJob:
-        job = AnalysisJob(uuid.uuid4().hex, name[:200], format_name, payload, analyze_raw)
+    def submit(
+        self,
+        name: str,
+        format_name: str,
+        payload: bytes,
+        analyze_raw: bool,
+        *,
+        selected_direction: str = "both",
+        flow_id: str | None = None,
+    ) -> AnalysisJob:
+        job = AnalysisJob(uuid.uuid4().hex, name[:200], format_name, payload, analyze_raw, selected_direction, flow_id)
         with self._lock:
             if self._closed:
                 raise RuntimeError("analysis manager is closed")
             self._cleanup_locked()
+            if len(self._jobs) >= self.limits.max_retained_jobs:
+                raise RuntimeError("job retention limit reached")
+            payload_size = len(payload)
+            if payload_size > self.limits.max_job_payload_bytes:
+                raise RuntimeError("job payload exceeds retention limit")
+            if self._retained_payload_bytes + payload_size > self.limits.max_job_payload_bytes:
+                raise RuntimeError("job payload retention limit reached")
             # Enqueue and publish while holding the same lock.  This prevents
             # close() from stopping the worker between those two operations.
             try:
@@ -73,6 +93,7 @@ class AnalysisManager:
             except queue.Full:
                 raise RuntimeError("analysis queue is full") from None
             self._jobs[job.job_id] = job
+            self._retained_payload_bytes += payload_size
         return job
 
     def get(self, job_id: str) -> dict[str, Any] | None:
@@ -131,8 +152,15 @@ class AnalysisManager:
                     job.status = "IMPORTING"
                     job.progress = 5
 
-                imported = self._importer(job.name, job.payload, job.format_name, self.limits)
+                input_size = len(job.payload)
+                try:
+                    imported = self._importer(job.name, job.payload, job.format_name, self.limits)
+                except Exception:
+                    with self._lock:
+                        self._release_payload_locked(job)
+                    raise
                 with self._lock:
+                    self._release_payload_locked(job)
                     if job.cancel_event.is_set() or job.status in self._TERMINAL:
                         self._mark_cancelled_locked(job)
                         continue
@@ -151,6 +179,8 @@ class AnalysisManager:
                     imported.packets,
                     limits=self.limits,
                     analyze_raw=job.analyze_raw,
+                    selected_direction=job.selected_direction,
+                    flow_id=job.flow_id,
                     cancel=job.cancel_event.is_set,
                     progress=progress,
                 )
@@ -159,9 +189,11 @@ class AnalysisManager:
                     "name": job.name,
                     "format": imported.format,
                     "packet_count": len(imported.packets),
-                    "byte_count": len(job.payload),
+                    "byte_count": input_size,
                 }
                 result["warnings"] = _merge_warnings(result.get("warnings", []), imported.warnings)
+                if len(json.dumps(result, sort_keys=True, separators=(",", ":"))) > self.limits.max_response_bytes:
+                    raise ValueError("analysis result exceeds response limit")
                 with self._lock:
                     # Cancellation and completion are one atomic decision.
                     # In particular, do not let a late cancel resurrect as a
@@ -186,14 +218,20 @@ class AnalysisManager:
             finally:
                 self._queue.task_done()
 
-    @staticmethod
-    def _mark_cancelled_locked(job: AnalysisJob) -> None:
+    def _mark_cancelled_locked(self, job: AnalysisJob) -> None:
         if job.status in {"COMPLETE", "FAILED"}:
             return
         job.status = "CANCELLED"
         job.progress = min(job.progress, 99)
         job.result = None
         job.error = None
+        self._release_payload_locked(job)
+
+    def _release_payload_locked(self, job: AnalysisJob) -> None:
+        if not job.payload:
+            return
+        self._retained_payload_bytes -= len(job.payload)
+        job.payload = b""
 
     def _cleanup_locked(self) -> None:
         now = time.monotonic()

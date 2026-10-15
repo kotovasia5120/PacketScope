@@ -17,6 +17,8 @@ class Limits:
     max_crc_ranges: int = 512
     max_flows: int = 100_000
     max_samples: int = 1_000
+    max_job_payload_bytes: int = 64 * 1024 * 1024
+    max_retained_jobs: int = 32
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -30,6 +32,8 @@ class Limits:
             ("max_crc_ranges", self.max_crc_ranges),
             ("max_flows", self.max_flows),
             ("max_samples", self.max_samples),
+            ("max_job_payload_bytes", self.max_job_payload_bytes),
+            ("max_retained_jobs", self.max_retained_jobs),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be positive")

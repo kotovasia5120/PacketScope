@@ -12,9 +12,16 @@ from packetscope.models import Limits
 from packetscope.importers.base import import_bytes
 from packetscope.jobs import AnalysisManager
 from packetscope.web import PacketScopeServer
+from tests.fixtures.phase6_multiflow import pcap_bytes
 
 
-def multipart(payload: bytes, filename: str = "sample.bin", raw: bool = False) -> tuple[bytes, str]:
+def multipart(
+    payload: bytes,
+    filename: str = "sample.bin",
+    raw: bool = False,
+    direction: str | None = None,
+    flow_id: str | None = None,
+) -> tuple[bytes, str]:
     boundary = "----PacketScope" + uuid.uuid4().hex
     body = (
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
@@ -22,6 +29,10 @@ def multipart(payload: bytes, filename: str = "sample.bin", raw: bool = False) -
     ).encode() + payload
     if raw:
         body += f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"raw\"\r\n\r\ntrue".encode()
+    if direction is not None:
+        body += f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"direction\"\r\n\r\n{direction}".encode()
+    if flow_id is not None:
+        body += f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"flow_id\"\r\n\r\n{flow_id}".encode()
     body += f"\r\n--{boundary}--\r\n".encode()
     return body, f"multipart/form-data; boundary={boundary}"
 
@@ -134,6 +145,49 @@ class WebIntegrationTests(unittest.TestCase):
         with self.request("/api/analyze", "POST", body, content_type) as response:
             result = json.load(response)
         self.assertEqual(result["analysis"]["scope"], "raw_packet")
+
+    def test_upload_scope_parameters_reach_analysis(self):
+        self.server.limits = Limits(max_input_bytes=64 * 1024)
+        payload = b"not-a-decoded-flow"
+        body, content_type = multipart(payload, direction="reverse")
+        with self.request("/api/analyze", "POST", body, content_type) as response:
+            result = json.load(response)
+        self.assertEqual(result["flow_selection"], {
+            "flow_id": None, "direction": "reverse", "applied": True,
+        })
+        self.assertEqual(result["observations"]["analysis_packet_count"], 0)
+
+    def test_job_scope_reanalysis_returns_selected_flow_packets(self):
+        self.server.limits = Limits(max_input_bytes=64 * 1024)
+        self.server.analysis_manager.limits = self.server.limits
+        flow_id = "ipv4/tcp/192.0.2.30:8000<->192.0.2.40:9000"
+        body, content_type = multipart(pcap_bytes(), filename="phase6.pcap", direction="both", flow_id=flow_id)
+        with self.request("/api/jobs", "POST", body, content_type) as response:
+            queued = json.load(response)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with self.request(f"/api/jobs/{queued['job_id']}") as response:
+                status = json.load(response)
+            if status["status"] in {"COMPLETE", "FAILED", "CANCELLED"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(status["status"], "COMPLETE")
+        result = status["result"]
+        self.assertEqual(result["flow_selection"], {"flow_id": flow_id, "direction": "both", "applied": True})
+        self.assertEqual([packet["index"] for packet in result["packets"]], [4, 5, 6])
+        self.assertTrue(all(
+            set(packet_ids) <= {4, 5, 6}
+            for hypothesis in result["hypotheses"]
+            for packet_ids in [evidence.get("packet_ids", []) for evidence in hypothesis.get("evidence", [])]
+        ))
+
+    def test_invalid_scope_parameter_is_rejected_and_server_survives(self):
+        body, content_type = multipart(b"payload", direction="sideways")
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/analyze", "POST", body, content_type)
+        self.assertEqual(context.exception.code, 400)
+        with self.request("/api/health") as response:
+            self.assertEqual(response.status, 200)
 
     def test_upload_limit_returns_413_and_server_survives(self):
         body, content_type = multipart(b"x" * 600)

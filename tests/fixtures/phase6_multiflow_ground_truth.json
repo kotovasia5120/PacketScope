@@ -1,0 +1,38 @@
+{
+  "capture": "phase6_multiflow.pcap",
+  "format": "pcap",
+  "flow_ids": [
+    "ipv4/udp/192.0.2.10:4000<->192.0.2.20:5000",
+    "ipv6/udp/2001:db8::1:6000<->2001:db8::2:7000",
+    "ipv4/tcp/192.0.2.30:8000<->192.0.2.40:9000",
+    "ipv6/tcp/2001:db8::3:10000<->2001:db8::4:11000"
+  ],
+  "membership": {
+    "ipv4/udp/192.0.2.10:4000<->192.0.2.20:5000": [0, 1],
+    "ipv6/udp/2001:db8::1:6000<->2001:db8::2:7000": [2, 3],
+    "ipv4/tcp/192.0.2.30:8000<->192.0.2.40:9000": [4, 5, 6],
+    "ipv6/tcp/2001:db8::3:10000<->2001:db8::4:11000": [7]
+  },
+  "directions": {
+    "0": "forward",
+    "1": "reverse",
+    "2": "forward",
+    "3": "reverse",
+    "4": "forward",
+    "5": "reverse",
+    "6": "forward",
+    "7": "forward",
+    "9": "unsupported-or-incomplete"
+  },
+  "limitations": [
+    "TCP stream reassembly is not performed; segments remain packet-scoped",
+    "packet 8 uses an unsupported Ethernet link type",
+    "packet 9 is shorter than its recorded original length",
+    "packet 6 is a duplicate TCP segment and should be reported as a sequence overlap hypothesis"
+  ],
+  "application_crc": {
+    "algorithm": "CRC-16/CCITT-FALSE",
+    "byte_order": "big",
+    "scope": "message payloads in packets 0 through 7"
+  }
+}

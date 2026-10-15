@@ -3,6 +3,7 @@ import time
 import unittest
 
 from packetscope.importers.base import import_bytes as real_import_bytes
+from packetscope.models import ImportResult, Packet
 from packetscope.jobs import AnalysisManager
 from packetscope.models import Limits
 
@@ -158,6 +159,119 @@ class AnalysisManagerTests(unittest.TestCase):
         self.assertEqual(manager.get(queued.job_id)["status"], "CANCELLED")
         with self.assertRaisesRegex(RuntimeError, "manager is closed"):
             manager.submit("later.bin", "bin", b"later", False)
+
+    def test_scope_selection_reaches_worker_analyzer(self):
+        observed = {}
+        started = threading.Event()
+
+        def analyzer(packets, *, selected_direction, flow_id, **kwargs):
+            observed.update(direction=selected_direction, flow_id=flow_id)
+            started.set()
+            return {"warnings": []}
+
+        manager = self.make_manager(analyzer)
+        try:
+            job = manager.submit(
+                "sample.bin", "bin", b"sample", False,
+                selected_direction="reverse", flow_id="flow-1",
+            )
+            self.assertTrue(started.wait(1))
+            self.assertEqual(wait_for(manager, job.job_id, {"COMPLETE"})["status"], "COMPLETE")
+            self.assertEqual(observed, {"direction": "reverse", "flow_id": "flow-1"})
+        finally:
+            manager.close()
+
+    def test_payload_retention_limit_rejects_and_recovers(self):
+        importing = threading.Event()
+        release = threading.Event()
+
+        def importer(name, payload, format_name, limits):
+            importing.set()
+            release.wait(1)
+            return ImportResult("bin", [Packet(0, payload)])
+
+        manager = AnalysisManager(
+            Limits(max_job_payload_bytes=10), max_queue=2,
+            importer=importer, analyzer=lambda packets, **kwargs: {"warnings": []},
+        )
+        try:
+            first = manager.submit("first.bin", "bin", b"12345", False)
+            self.assertTrue(importing.wait(1))
+            queued = manager.submit("queued.bin", "bin", b"12345", False)
+            with self.assertRaisesRegex(RuntimeError, "payload retention limit"):
+                manager.submit("rejected.bin", "bin", b"x", False)
+            release.set()
+            self.assertEqual(wait_for(manager, first.job_id, {"COMPLETE"})["status"], "COMPLETE")
+            self.assertEqual(wait_for(manager, queued.job_id, {"COMPLETE"})["status"], "COMPLETE")
+            self.assertEqual(manager._retained_payload_bytes, 0)
+            recovered = manager.submit("recovered.bin", "bin", b"x", False)
+            self.assertEqual(wait_for(manager, recovered.job_id, {"COMPLETE"})["status"], "COMPLETE")
+        finally:
+            release.set()
+            manager.close()
+
+    def test_cancel_during_import_releases_payload_after_import_unwinds(self):
+        importing = threading.Event()
+        release = threading.Event()
+
+        def importer(name, payload, format_name, limits):
+            importing.set()
+            release.wait(1)
+            return ImportResult("bin", [Packet(0, payload)])
+
+        manager = AnalysisManager(
+            Limits(max_job_payload_bytes=10), importer=importer,
+            analyzer=lambda packets, **kwargs: {"warnings": []},
+        )
+        try:
+            job = manager.submit("sample.bin", "bin", b"payload", False)
+            self.assertTrue(importing.wait(1))
+            self.assertTrue(manager.cancel(job.job_id))
+            release.set()
+            self.assertEqual(wait_for(manager, job.job_id, {"CANCELLED"})["status"], "CANCELLED")
+            self.assertEqual(manager._retained_payload_bytes, 0)
+        finally:
+            release.set()
+            manager.close()
+
+    def test_oversized_completed_result_becomes_safe_failure(self):
+        manager = AnalysisManager(
+            Limits(max_response_bytes=64),
+            analyzer=lambda packets, **kwargs: {"huge": "x" * 100, "warnings": []},
+        )
+        try:
+            job = manager.submit("sample.bin", "bin", b"sample", False)
+            result = wait_for(manager, job.job_id, {"FAILED"})
+            self.assertEqual(result["error"], "analysis failed")
+            self.assertEqual(manager._retained_payload_bytes, 0)
+        finally:
+            manager.close()
+
+    def test_active_job_is_not_expired_by_creation_age(self):
+        started = threading.Event()
+        completed = threading.Event()
+        release = threading.Event()
+
+        def analyzer(packets, *, cancel, **kwargs):
+            started.set()
+            release.wait(1)
+            completed.set()
+            return {"warnings": []}
+
+        manager = self.make_manager(analyzer, retention_seconds=0.01)
+        try:
+            job = manager.submit("active.bin", "bin", b"active", False)
+            self.assertTrue(started.wait(1))
+            with manager._lock:
+                manager._jobs[job.job_id].created_at -= 100
+            self.assertIn(manager.get(job.job_id)["status"], {"ANALYZING", "COMPLETE"})
+            release.set()
+            self.assertTrue(completed.wait(1))
+            with manager._lock:
+                self.assertEqual(manager._jobs[job.job_id].status, "COMPLETE")
+        finally:
+            release.set()
+            manager.close()
 
 
 if __name__ == "__main__":
