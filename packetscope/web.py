@@ -67,21 +67,7 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if self.path == "/api/demo/evaluate":
-            try:
-                length = int(self.headers.get("Content-Length", "-1"))
-                if length < 0 or length > self.server.limits.max_response_bytes:  # type: ignore[attr-defined]
-                    raise ValueError("invalid evaluation request size")
-                    body = self._read_body(length)
-                    if body is None:
-                        return
-                    value = json.loads(body)
-                profile = str(value.get("profile", ""))
-                truth = self.server.demo_truth.get(profile)  # type: ignore[attr-defined]
-                if truth is None:
-                    raise ValueError("demo evaluation is not available")
-                self._json(HTTPStatus.OK, evaluate_result(value.get("result", {}), truth))
-            except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)[:200]})
+            self._evaluate_demo()
             return
         if self.path == "/api/jobs":
             self._submit_job()
@@ -197,6 +183,71 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         except (TimeoutError, socket.timeout):
             self._json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request body read timed out"})
             return None
+
+    def _evaluate_demo(self) -> None:
+        """Evaluate a previously returned demo result without exposing truth data.
+
+        Evaluation is deliberately a post-analysis operation.  The request
+        contains only the profile name and the caller's result; the matching
+        ground truth stays in the server-side demo registry.  Every client
+        failure is converted to a response so malformed requests cannot tear
+        down the HTTP connection.
+        """
+        length_header = self.headers.get("Content-Length")
+        try:
+            length = int(length_header or "-1")
+        except ValueError:
+            length = -1
+        limit = self.server.limits.max_input_bytes  # type: ignore[attr-defined]
+        if length < 0:
+            self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return
+        if length > limit:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "evaluation request exceeds size limit"})
+            return
+        if not self.headers.get("Content-Type", "").lower().split(";", 1)[0].strip() == "application/json":
+            self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "Content-Type must be application/json"})
+            return
+        body = self._read_body(length)
+        if body is None:
+            return
+        if len(body) != length:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
+            return
+        try:
+            value = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation request must be valid JSON"})
+            return
+        if not isinstance(value, dict):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation request must be a JSON object"})
+            return
+        profile = value.get("profile")
+        result = value.get("result")
+        if not isinstance(profile, str) or not profile:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation profile is required"})
+            return
+        if profile not in {"crc16-be", "crc32-le"}:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "unknown evaluation profile"})
+            return
+        if not isinstance(result, dict):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation result is required"})
+            return
+        hypotheses = result.get("hypotheses", [])
+        if not isinstance(hypotheses, list) or len(hypotheses) > self.server.limits.max_hypotheses:  # type: ignore[attr-defined]
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation hypotheses exceed the configured limit"})
+            return
+        truth = self.server.demo_truth.get(profile)  # type: ignore[attr-defined]
+        if truth is None:
+            self._json(HTTPStatus.CONFLICT, {"error": "demo evaluation is not available"})
+            return
+        try:
+            self._json(HTTPStatus.OK, evaluate_result(result, truth))
+        except (TypeError, ValueError, KeyError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation result has an invalid shape"})
+        except Exception:
+            # Do not expose exception text, tracebacks, or packet-derived data.
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "evaluation failed"})
 
     def _json(self, status: HTTPStatus, value: dict) -> None:
         payload = dumps_result(value).encode("utf-8")

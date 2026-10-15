@@ -6,6 +6,7 @@ import unittest
 import urllib.error
 import urllib.request
 import uuid
+from unittest import mock
 
 from packetscope.models import Limits
 from packetscope.importers.base import import_bytes
@@ -50,6 +51,75 @@ class WebIntegrationTests(unittest.TestCase):
         with self.request("/") as response:
             self.assertEqual(response.status, 200)
             self.assertIn(b"PacketScope", response.read())
+
+    def test_demo_evaluation_returns_metrics_for_both_profiles(self):
+        self.server.limits = Limits(max_input_bytes=2 * 1024 * 1024)
+        for profile in ("crc16-be", "crc32-le"):
+            with self.request(f"/api/demo?profile={profile}") as response:
+                result = json.load(response)
+            body = json.dumps({"profile": profile, "result": result}).encode()
+            with self.request("/api/demo/evaluate", "POST", body, "application/json") as response:
+                evaluation = json.load(response)
+            self.assertIn("precision", evaluation)
+            self.assertIn("recall", evaluation)
+            self.assertIn("f1", evaluation)
+            self.assertGreater(evaluation["matched_count"], 0)
+        with self.request("/api/health") as response:
+            self.assertEqual(response.status, 200)
+
+    def test_demo_evaluation_rejects_client_errors_and_recovers(self):
+        cases = [
+            (b"{", "application/json", 400),
+            (json.dumps({"profile": "crc16-be"}).encode(), "application/json", 400),
+            (json.dumps({"profile": "not-a-demo", "result": {}}).encode(), "application/json", 400),
+            (json.dumps({"profile": "crc16-be", "result": []}).encode(), "application/json", 400),
+            (b"{}", "text/plain", 415),
+        ]
+        for body, content_type, expected_status in cases:
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self.request("/api/demo/evaluate", "POST", body, content_type)
+            self.assertEqual(context.exception.code, expected_status)
+
+        self.server.limits = Limits(max_input_bytes=8)
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/demo/evaluate", "POST", b"{}" * 8, "application/json")
+        self.assertEqual(context.exception.code, 413)
+
+        self.server.limits = Limits(max_input_bytes=512)
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request(
+                "/api/demo/evaluate", "POST",
+                json.dumps({"profile": "crc16-be", "result": {}}).encode(), "application/json"
+            )
+        self.assertEqual(context.exception.code, 409)
+        sock = socket.create_connection(("127.0.0.1", self.server.server_port), timeout=2)
+        request = (
+            "POST /api/demo/evaluate HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.server.server_port}\r\n"
+            "Content-Length: 10\r\n"
+            "Content-Type: application/json\r\n\r\n"
+            "{}"
+        ).encode()
+        sock.sendall(request)
+        sock.shutdown(socket.SHUT_WR)
+        response = sock.recv(4096)
+        sock.close()
+        self.assertIn(b"400", response.split(b"\r\n", 1)[0])
+        with self.request("/api/health") as response:
+            self.assertEqual(response.status, 200)
+
+    def test_demo_evaluation_hides_unexpected_failures(self):
+        self.server.limits = Limits(max_input_bytes=2 * 1024 * 1024)
+        with self.request("/api/demo") as response:
+            result = json.load(response)
+        body = json.dumps({"profile": "crc16-be", "result": result}).encode()
+        with mock.patch("packetscope.web.evaluate_result", side_effect=RuntimeError("secret payload")):
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self.request("/api/demo/evaluate", "POST", body, "application/json")
+        self.assertEqual(context.exception.code, 500)
+        self.assertNotIn(b"secret payload", context.exception.read())
+        with self.request("/api/health") as response:
+            self.assertEqual(response.status, 200)
 
     def test_upload_returns_analysis_json(self):
         body, content_type = multipart(bytes([0xAA, 1, 2, 3]))
