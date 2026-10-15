@@ -5,12 +5,15 @@ const { test, expect } = require("@playwright/test");
 // without serializing any packet payload.
 test.beforeEach(async ({ page }, testInfo) => {
   const consoleLines = [];
+  const pageErrors = [];
   page.on("console", (message) => consoleLines.push(`${message.type()}: ${message.text()}`));
-  page.on("pageerror", (error) => consoleLines.push(`pageerror: ${error.name}: ${error.message}`));
+  page.on("pageerror", (error) => { pageErrors.push(`${error.name}: ${error.message}`); consoleLines.push(`pageerror: ${error.name}: ${error.message}`); });
   testInfo._packetscopeConsoleLines = consoleLines;
+  testInfo._packetscopePageErrors = pageErrors;
 });
 
 test.afterEach(async ({}, testInfo) => {
+  expect(testInfo._packetscopePageErrors || []).toEqual([]);
   await testInfo.attach("browser-console.txt", {
     body: Buffer.from((testInfo._packetscopeConsoleLines || []).join("\n"), "utf8"),
     contentType: "text/plain",
