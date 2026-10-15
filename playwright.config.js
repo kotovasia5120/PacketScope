@@ -15,7 +15,7 @@ module.exports = defineConfig({
     video: "off",
   },
   webServer: {
-    command: "python3 -m packetscope.cli serve --host 127.0.0.1 --port 18765",
+    command: `${process.env.PACKETSCOPE_PYTHON || "python3"} -m packetscope.cli serve --host 127.0.0.1 --port 18765`,
     url: "http://127.0.0.1:18765/api/health",
     reuseExistingServer: false,
     timeout: 15_000,
