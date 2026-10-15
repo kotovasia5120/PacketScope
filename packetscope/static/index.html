@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PacketScope — local protocol workbench</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">LOCAL-ONLY / EVIDENCE FIRST</p>
+      <h1>PacketScope</h1>
+      <p>Explore unknown binary protocols without turning guesses into facts.</p>
+    </div>
+    <div class="privacy-badge">No cloud · No telemetry</div>
+  </header>
+
+  <main>
+    <section class="panel upload-panel" aria-labelledby="load-heading">
+      <div class="section-heading">
+        <div><p class="eyebrow">01 / LOAD EVIDENCE</p><h2 id="load-heading">Bring in packets</h2></div>
+        <span class="limit-note">256 MiB upload limit</span>
+      </div>
+      <form id="upload-form" enctype="multipart/form-data">
+        <label class="dropzone" for="packet-file">
+          <span class="drop-title">Choose a BIN, HEX, PCAP, or PCAPNG file</span>
+          <span class="drop-subtitle" id="file-name">Nothing loaded yet</span>
+          <input id="packet-file" name="file" type="file" accept=".bin,.hex,.pcap,.pcapng,.cap,.txt" required>
+        </label>
+        <div class="form-row">
+          <label for="format">Format</label>
+          <select id="format" name="format">
+            <option value="auto">Auto-detect</option>
+            <option value="bin">BIN</option>
+            <option value="hex">HEX</option>
+            <option value="pcap">PCAP</option>
+            <option value="pcapng">PCAPNG</option>
+          </select>
+          <button type="submit">Analyze locally</button>
+        </div>
+      </form>
+      <p id="status" class="status" role="status">Ready for a local file.</p>
+    </section>
+
+    <section id="results" class="results" hidden>
+      <section class="panel summary-panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">02 / ORIENTATION</p><h2>Capture summary</h2></div>
+          <button id="export-button" class="secondary" type="button">Export JSON</button>
+        </div>
+        <div id="summary-grid" class="metric-grid"></div>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel">
+          <div class="section-heading"><div><p class="eyebrow">03 / BYTES</p><h2>HEX / ASCII view</h2></div></div>
+          <label for="packet-select">Packet</label>
+          <select id="packet-select"></select>
+          <div id="hex-view" class="hex-view" aria-live="polite"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading"><div><p class="eyebrow">04 / COMPARE</p><h2>Aligned regions</h2></div></div>
+          <p class="muted">Constant and variable regions are observations across packet order.</p>
+          <div id="comparison-view"></div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="section-heading"><div><p class="eyebrow">05 / HYPOTHESES</p><h2>What might these bytes do?</h2></div></div>
+        <p class="notice">Every automatic result is a hypothesis. Review its evidence and caveat before relying on it.</p>
+        <div id="hypotheses-view"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading"><div><p class="eyebrow">06 / HUMAN CONTEXT</p><h2>Manual annotations</h2></div></div>
+        <form id="annotation-form" class="annotation-form">
+          <label>Label <input id="annotation-label" required maxlength="120" placeholder="e.g. message type"></label>
+          <label>Start offset <input id="annotation-start" type="number" min="0" value="0" required></label>
+          <label>End offset <input id="annotation-end" type="number" min="1" value="1" required></label>
+          <button type="submit">Add annotation</button>
+        </form>
+        <ul id="annotations-view" class="annotation-list"></ul>
+      </section>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
