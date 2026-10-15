@@ -22,7 +22,7 @@ def parse_pcap(data: bytes, name: str, limits: Limits) -> ImportResult:
         raise FormatError("unsupported PCAP magic")
     endian, resolution = _MAGICS[magic]
     version_major, version_minor, _zone, _sigfigs, snaplen, link_type = struct.unpack_from(
-        endian + "HHiiii", data, 4
+        endian + "HHiiII", data, 4
     )
     if (version_major, version_minor) != (2, 4):
         raise FormatError(f"unsupported PCAP version {version_major}.{version_minor}")

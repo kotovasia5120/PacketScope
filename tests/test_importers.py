@@ -7,10 +7,10 @@ from packetscope.models import Limits
 
 
 def make_pcap(
-    payloads: list[bytes], *, endian: str = "<", nanoseconds: bool = False, snaplen: int = 65535
+    payloads: list[bytes], *, endian: str = "<", nanoseconds: bool = False, snaplen: int = 65535, link_type: int = 1
 ) -> bytes:
     magic = 0xA1B23C4D if nanoseconds else 0xA1B2C3D4
-    data = bytearray(struct.pack(endian + "IHHiiii", magic, 2, 4, 0, 0, snaplen, 1))
+    data = bytearray(struct.pack(endian + "IHHiiII", magic, 2, 4, 0, 0, snaplen, link_type))
     for index, payload in enumerate(payloads, 1):
         data.extend(struct.pack(endian + "IIII", 100 + index, 123, len(payload), len(payload)))
         data.extend(payload)
@@ -83,6 +83,8 @@ class ImporterTests(unittest.TestCase):
         invalid[28:32] = struct.pack("<I", 1_000_000)
         with self.assertRaises(FormatError):
             import_bytes("capture.pcap", bytes(invalid))
+        unknown = import_bytes("capture.pcap", make_pcap([b"raw"], link_type=0xFFFFFFFF))
+        self.assertEqual(unknown.packets[0].link_type, 0xFFFFFFFF)
 
     def test_pcapng_sections_resolution_and_simple_padding(self):
         first = make_pcapng_section(b"abc", resolution=9)
