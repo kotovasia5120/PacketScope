@@ -13,7 +13,7 @@ class SchemaTests(unittest.TestCase):
         self.packets = packets
 
     def test_export_import_and_apply_round_trip(self):
-        schema = export_schema(self.result, [{"label": "manual type", "start": 1, "end": 2, "field_type": "message_type", "status": "confirmed"}])
+        schema = export_schema(self.result, [{"label": "manual type", "start": 1, "end": 3, "field_type": "message_type", "status": "confirmed"}])
         schema_json = json.dumps(schema)
         restored = loads_schema(schema_json)
         self.assertEqual(restored["schema_version"], 1)
@@ -21,6 +21,8 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(report["packet_count"], 3)
         self.assertEqual(report["field_count"], len(restored["fields"]))
         self.assertTrue(any(field["name"] == "manual type" for field in restored["fields"]))
+        manual_value = next(field for field in report["values"][0]["fields"] if field["name"] == "manual type")
+        self.assertEqual(manual_value["value"], "0100")
         self.assertIn('"schema_version": 1', schema_json)
 
     def test_overlapping_and_variable_length_fields_are_validated(self):

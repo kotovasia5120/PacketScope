@@ -125,7 +125,10 @@ def loads_schema(payload: str | bytes) -> dict[str, Any]:
 def _field_from_item(item: dict[str, Any], *, origin: str, review_status: str) -> dict[str, Any]:
     width = item.get("width")
     if width is None:
-        width = int(item.get("width_bits", 8)) // 8
+        if "end" in item and "start" in item:
+            width = int(item["end"]) - int(item["start"])
+        else:
+            width = int(item.get("width_bits", 8)) // 8
     offset = item.get("absolute_offset", item.get("offset", item.get("start", 0)))
     evidence = item.get("evidence", [])
     observed = item.get("candidate_value", item.get("observed_values", []))

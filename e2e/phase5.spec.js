@@ -47,7 +47,11 @@ test("opens, navigates, and completes both deterministic demo investigations", a
   await expect(page.locator("#evaluation-view")).toContainText(/Trusted server reference/);
   const schemaDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export protocol schema" }).click();
-  await (await schemaDownload).delete();
+  const schemaPath = testInfo.outputPath("crc16.schema.json");
+  await (await schemaDownload).saveAs(schemaPath);
+  await page.locator("#schema-file").setInputFiles(schemaPath);
+  await expect(page.locator("#status")).toContainText("Applied protocol schema to 8 packet(s)");
+  await expect(page.locator("#fields-view")).toContainText("Applied schema: PacketScope protocol");
   await page.locator("#demo-profile").selectOption("crc32-le");
   await page.getByRole("button", { name: "Load demo" }).click();
   await expect(page.locator("#crc-view")).toContainText("CRC-32");
@@ -106,10 +110,17 @@ test("supports HEX interaction and project persistence", async ({ page }, testIn
   await page.locator("#annotation-start").fill("0");
   await page.getByRole("button", { name: "Add annotation" }).click();
   await expect(page.locator("#annotations-view")).toContainText("confirmed header");
-  await page.keyboard.press("Control+z");
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.locator("#annotation-label").fill("edited header");
+  await page.locator("#annotation-start").fill("1");
+  await page.locator("#annotation-width").fill("2");
+  await page.getByRole("button", { name: "Update annotation" }).click();
+  await expect(page.locator("#annotations-view")).toContainText("edited header");
   await expect(page.locator("#annotations-view")).not.toContainText("confirmed header");
-  await page.keyboard.press("Control+y");
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#annotations-view")).toContainText("confirmed header");
+  await page.keyboard.press("Control+y");
+  await expect(page.locator("#annotations-view")).toContainText("edited header");
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export JSON" }).click();
@@ -121,7 +132,7 @@ test("supports HEX interaction and project persistence", async ({ page }, testIn
   await expect(page.locator("#status")).toContainText("Ready");
   await page.locator("#project-file").setInputFiles(projectPath);
   await expect(page.locator("#status")).toContainText("Restored saved project");
-  await expect(page.locator("#annotations-view")).toContainText("confirmed header");
+  await expect(page.locator("#annotations-view")).toContainText("edited header");
   const restoredSummary = await page.locator("#summary-grid").innerText();
   expect(restoredSummary.replace(/\s+/g, "")).toBe(beforeSummary.replace(/\s+/g, ""));
 });
