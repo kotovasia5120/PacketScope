@@ -1,0 +1,2 @@
+# PacketScope intentionally has no third-party runtime dependencies.
+# This lockfile records the dependency set for reproducible offline builds.
