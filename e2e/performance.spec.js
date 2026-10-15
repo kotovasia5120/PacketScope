@@ -31,7 +31,11 @@ test("renders bounded packet and hypothesis workloads without losing selection",
       return { render_ms: performance.now() - start, packet_count: value.packets.length, dom_nodes: document.querySelectorAll("*").length };
     }, resultFor(packetCount));
     measurements.push(measurement);
-    await expect(page.locator("#packet-select option")).toHaveCount(packetCount);
+    await expect(page.locator("#packet-select option")).toHaveCount(Math.min(packetCount, 200));
+    if (packetCount > 200) {
+      await page.locator("#packet-search").fill(String(packetCount - 1));
+      await expect(page.locator("#packet-select option")).toHaveCount(1);
+    }
     await page.locator("#packet-select").selectOption(String(packetCount - 1));
     await expect(page.locator("#packet-select")).toHaveValue(String(packetCount - 1));
   }

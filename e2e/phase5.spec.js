@@ -72,6 +72,7 @@ test("downloads, reimports, and reanalyzes a multi-flow capture by scope", async
   await page.locator("#format").selectOption("pcap");
   await page.getByRole("button", { name: "Analyze locally" }).click();
   await expect(page.locator("#status")).toContainText(/Analyzed 10 packet/);
+  await expect(page.locator("#flow-analysis-mode")).toContainText(/heterogeneous/i);
   await expect(page.locator("#flow-select option")).toHaveCount(5);
   const tcpFlow = "ipv4/tcp/192.0.2.30:8000<->192.0.2.40:9000";
   await page.locator("#flow-select").selectOption(tcpFlow);
