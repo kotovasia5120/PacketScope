@@ -1,0 +1,11 @@
+{
+  "name": "packetscope-e2e",
+  "private": true,
+  "description": "Development-only Chromium acceptance tests for PacketScope",
+  "scripts": {
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}

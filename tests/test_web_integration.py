@@ -96,6 +96,16 @@ class WebIntegrationTests(unittest.TestCase):
             self.request("/api/health")
         self.assertEqual(context.exception.code, 500)
 
+    def test_multipart_field_count_is_bounded(self):
+        self.server.limits = Limits(max_input_bytes=4096)
+        boundary = "----PacketScopeFields"
+        parts = [f"--{boundary}\r\nContent-Disposition: form-data; name=field{i}\r\n\r\nvalue\r\n" for i in range(33)]
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=file; filename=x.bin\r\n\r\nx\r\n")
+        body = ("".join(parts) + f"--{boundary}--\r\n").encode()
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/analyze", "POST", body, f"multipart/form-data; boundary={boundary}")
+        self.assertEqual(context.exception.code, 400)
+
     def test_job_reads_are_repeatable_and_terminal_delete_is_conflict(self):
         body, content_type = multipart(b"job")
         with self.request("/api/jobs", "POST", body, content_type) as response:

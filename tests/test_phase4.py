@@ -52,6 +52,23 @@ class Phase4BackendTests(unittest.TestCase):
         self.assertIsNone(empty["recall"])
         self.assertFalse(empty["recall_applicable"])
 
+    def test_evaluation_reports_top_k_and_duplicate_aware_quality(self):
+        result = evaluate_result({"hypotheses": [
+            {"id": "right", "field_type": "crc", "absolute_offset": 8, "width_bits": 16,
+             "algorithm": "CRC-16/CCITT-FALSE", "confidence": 0.9},
+            {"id": "duplicate", "field_type": "crc", "absolute_offset": 8, "width_bits": 16,
+             "algorithm": "CRC-16/CCITT-FALSE", "confidence": 0.8},
+            {"id": "noise", "field_type": "message_type", "absolute_offset": 1, "width_bits": 8,
+             "confidence": 0.1},
+        ]}, [{"field_type": "crc", "absolute_offset": 8, "width_bits": 16,
+             "algorithm": "CRC-16/CCITT-FALSE"}])
+        self.assertEqual(result["top_k_metrics"]["top_1"]["matched"], 1)
+        self.assertEqual(result["duplicate_aware"]["duplicate_count"], 1)
+        self.assertEqual(result["field_type_accuracy"], 1.0)
+        self.assertEqual(result["offset_accuracy"], 1.0)
+        self.assertEqual(result["checksum_algorithm_accuracy"], 1.0)
+        self.assertEqual(result["false_positive_breakdown"]["message_type"], 1)
+
     def test_warning_sources_are_preserved(self):
         merged = _merge_warnings(["SEARCH_LIMIT_REACHED", {"source": "analyzer", "message": "TIME_LIMIT_EXCEEDED"}], ["truncated capture"])
         self.assertEqual({item["source"] for item in merged}, {"analyzer", "importer"})

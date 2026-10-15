@@ -16,6 +16,7 @@ class Limits:
     max_crc_candidates: int = 4000
     max_crc_ranges: int = 512
     max_flows: int = 100_000
+    max_samples: int = 1_000
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -28,6 +29,7 @@ class Limits:
             ("max_crc_candidates", self.max_crc_candidates),
             ("max_crc_ranges", self.max_crc_ranges),
             ("max_flows", self.max_flows),
+            ("max_samples", self.max_samples),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be positive")

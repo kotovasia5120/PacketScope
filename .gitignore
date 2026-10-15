@@ -12,3 +12,5 @@ build/
 *.bin
 *.hex
 results/
+node_modules/
+test-artifacts/

@@ -3,11 +3,19 @@
 const state = {
   result: null, annotations: [], selectedHypothesis: null, controller: null, jobId: null,
   compare: { ids: [], diffs: [], cursor: 0, mode: "offset" }, scrollTop: 0,
-  undo: [], redo: [], demoProfile: null
+  undo: [], redo: [], demoProfile: null, flowId: "", direction: "both"
 };
 const $ = (selector) => document.querySelector(selector);
 const node = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = String(text); if (cls) value.className = cls; return value; };
-const packets = () => state.result?.packets || [];
+const allPackets = () => state.result?.packets || [];
+const packets = () => {
+  const selected = state.result?.flows?.find((flow) => flow.flow_id === state.flowId);
+  const flows = state.result?.flows || [];
+  if (!selected && (!flows.length || state.direction === "both")) return allPackets();
+  const flowPackets = selected ? selected.packets || [] : flows.flatMap((flow) => flow.packets || []);
+  const ids = new Set(flowPackets.filter((item) => state.direction === "both" || item.direction === state.direction).map((item) => Number(item.packet_id)));
+  return allPackets().filter((packet) => ids.has(Number(packet.index)));
+};
 const selectedPacket = () => packets().find((packet) => packet.index === Number($("#packet-select").value));
 const hexBytes = (value) => (String(value || "").match(/[0-9a-f]{2}/gi) || []).map((part) => part.toLowerCase());
 const bytesOf = (packet) => hexBytes($("#payload-mode")?.value === "raw" ? (packet.raw_payload || packet.payload) : (packet.application_payload || packet.payload));
@@ -35,6 +43,8 @@ $("#compare-select").addEventListener("change", () => { state.compare.ids = Arra
 $("#hypothesis-type").addEventListener("change", renderHypotheses); $("#hypothesis-confidence").addEventListener("input", renderHypotheses); $("#evidence-only").addEventListener("change", renderHypotheses);
 $("#annotation-form").addEventListener("submit", (event) => { event.preventDefault(); const start = Number($("#annotation-start").value); const width = Number($("#annotation-width").value); if (!Number.isInteger(start) || start < 0 || !Number.isInteger(width) || width < 1) { setStatus("Annotation offsets must be positive integers.", true); return; } pushUndo(); state.annotations.push({ label: $("#annotation-label").value.trim(), field_type: $("#annotation-type").value, endian: $("#annotation-endian").value, start, end: start + width, source: "manual", status: "confirmed" }); renderAnnotations(); setStatus("Manual annotation added; export to persist it."); });
 document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => { document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item === button)); document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab)); }));
+$("#flow-select").addEventListener("change", () => { state.flowId = $("#flow-select").value; render(); });
+$("#direction-select").addEventListener("change", () => { state.direction = $("#direction-select").value; render(); });
 document.addEventListener("keydown", (event) => { if (!event.ctrlKey || (event.key.toLowerCase() !== "z" && event.key.toLowerCase() !== "y")) return; event.preventDefault(); const undoing = event.key.toLowerCase() === "z" && !event.shiftKey; const source = undoing ? state.undo : state.redo; const target = undoing ? state.redo : state.undo; if (!source.length) return; target.push(JSON.stringify(state.annotations)); state.annotations = JSON.parse(source.pop()); renderAnnotations(); setStatus(undoing ? "Annotation change undone." : "Annotation change redone."); });
 
 async function analyzeFile(file) {
@@ -52,6 +62,8 @@ function validateProject(value) { if (!value || typeof value !== "object" || !Ar
 function loadResult(result) { validateProject(result); state.result = result; state.selectedHypothesis = null; state.annotations = Array.isArray(result.annotations) ? result.annotations.slice(0, 1000) : []; state.undo = []; state.redo = []; state.demoProfile = result.demo?.profile || null; $("#results").hidden = false; $("#demo-evaluate").hidden = !state.demoProfile; render(); }
 function render() {
   const result = state.result; const summary = $("#summary-grid"); summary.replaceChildren();
+  const flowSelect = $("#flow-select"); const priorFlow = state.flowId; flowSelect.replaceChildren(node("option", "All flows")); flowSelect.firstChild.value = ""; (result.flows || []).forEach((flow) => flowSelect.append(Object.assign(node("option", `${flow.protocol.toUpperCase()} ${flow.endpoint_a.address}:${flow.endpoint_a.port} ↔ ${flow.endpoint_b.address}:${flow.endpoint_b.port}`), { value: flow.flow_id }))); if ((result.flows || []).some((flow) => flow.flow_id === priorFlow)) flowSelect.value = priorFlow; else { state.flowId = ""; flowSelect.value = ""; }
+  $("#direction-select").value = state.direction; const selectedFlow = result.flows?.find((flow) => flow.flow_id === state.flowId); $("#flow-selection-status").textContent = selectedFlow ? `${packets().length} packet(s) in selected flow · ${state.direction} direction.` : `Showing ${packets().length} packet(s) across all flows.`;
   [[result.source?.packet_count || result.packets.length, "packets"], [(result.source?.byte_count || 0).toLocaleString(), "source bytes"], [result.hypotheses?.length || 0, "candidate hypotheses"], [result.analysis?.status || "unknown", "analysis status"]].forEach(([value, label]) => { const metric = node("div", undefined, "metric"); metric.append(node("strong", value), node("span", label)); summary.append(metric); });
   const selector = $("#packet-select"); const prior = Number(selector.value); selector.replaceChildren(); packets().forEach((packet) => selector.append(Object.assign(node("option", `Packet ${packet.index} · ${bytesOf(packet).length} bytes`), { value: packet.index }))); if (packets().some((packet) => packet.index === prior)) selector.value = prior;
   const compare = $("#compare-select"); const oldIds = state.compare.ids.length ? state.compare.ids : packets().slice(0, 2).map((packet) => packet.index); compare.replaceChildren(); packets().slice(0, 64).forEach((packet) => { const option = Object.assign(node("option", `Packet ${packet.index} · ${bytesOf(packet).length} bytes`), { value: packet.index }); option.selected = oldIds.includes(packet.index); compare.append(option); }); state.compare.ids = oldIds.filter((id) => packets().some((packet) => packet.index === id));

@@ -107,7 +107,8 @@ def standard_vectors() -> dict[str, int]:
     return {params.name: compute_crc(b"123456789", params) for params in STANDARD_CRC}
 
 
-def discover_checksums(samples: Iterable[bytes], *, budget: SearchBudget = SearchBudget()) -> DiscoveryResult:
+def discover_checksums(samples: Iterable[bytes], *, budget: SearchBudget = SearchBudget(),
+                       allowed_algorithms: Iterable[str] | None = None) -> DiscoveryResult:
     """Search a small, explicit family of checksum layouts.
 
     Both a fixed offset and a checksum immediately before the end of each
@@ -129,6 +130,9 @@ def discover_checksums(samples: Iterable[bytes], *, budget: SearchBudget = Searc
 
     algorithms = [(params.name, params, params.width // 8) for params in STANDARD_CRC]
     algorithms.extend((name, None, width) for name, width in (("XOR-8", 1), ("ADDITIVE-8", 1), ("ADDITIVE-16", 2)))
+    if allowed_algorithms is not None:
+        allowed = {str(item) for item in allowed_algorithms}
+        algorithms = [item for item in algorithms if item[0] in allowed]
     hypotheses: list[ChecksumHypothesis] = []
     candidates_tested = 0
     ranges_tested = 0

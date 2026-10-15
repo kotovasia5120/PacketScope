@@ -5,8 +5,8 @@ unknown binary protocols. Load synthetic or real packet captures, compare bytes,
 inspect HEX/ASCII, and record evidence-backed hypotheses without sending data to
 cloud AI or external APIs.
 
-> **Status:** Phase 4 reliability and interactive demonstration slice. Automatic
-> findings remain hypotheses, not confirmed protocol facts.
+> **Status:** Phase 5 reliability slice. Automatic findings remain heuristic
+> hypotheses, not confirmed protocol facts.
 
 ## What works in this iteration
 
@@ -29,6 +29,11 @@ cloud AI or external APIs.
 - Bounded uploads and no telemetry, cloud AI, or execution of packet contents.
 - Basic Ethernet, IPv4/IPv6, TCP, and UDP metadata decoding without fragment
   reassembly; unsupported link types remain raw and explicitly unsupported.
+- Direction-aware IPv4/IPv6 TCP/UDP flow grouping with packet identity,
+  retransmission/out-of-order notes, and explicit no-TCP-reassembly limits.
+- Versioned `default`, `fast`, `deep`, and custom analysis profiles with bounded
+  budgets, SHA-256 input identity, profile fingerprints, and reproducibility
+  metadata in every analysis report.
 
 ## Quick start
 
@@ -69,6 +74,9 @@ unless that exposure is intentional.
 
 ```bash
 python3 -m packetscope.cli analyze sample.bin --format auto --pretty
+python3 -m packetscope.cli analyze sample.pcap --direction forward --profile fast --pretty
+python3 -m packetscope.cli profile save deep --output deep-profile.json
+python3 -m packetscope.cli profile validate deep-profile.json
 python3 -m packetscope.cli serve --host 127.0.0.1 --port 8765
 python3 -m packetscope.cli evaluate result.json ground-truth.json --pretty
 ```
@@ -106,6 +114,24 @@ baseline PASS is not attributed to this changed tree.
 
 The mandatory tests are offline and use only deterministic synthetic fixtures. CRC reference values and parameters are documented in [`docs/crc.md`](docs/crc.md).
 
+## Browser E2E
+
+Chromium is a development/test dependency only. Install the pinned Node
+lockfile and browser once, then run the real browser acceptance suite:
+
+```bash
+npm ci
+npx playwright install chromium
+npm run e2e
+```
+
+The suite starts the real local server, exercises both CRC demos, navigation,
+HEX interaction, annotations, undo/redo, project export/import, and invalid
+project handling. Failure screenshots, traces, and console text are written
+under `test-artifacts/` (ignored by Git); packet contents are not written to
+the console artifact. CI installs Chromium with Linux dependencies and uploads
+those artifacts only on failure.
+
 ## Interactive demonstration
 
 Start the server, open the browser, and click **Load demo**. Choose two or more
@@ -118,6 +144,12 @@ truth.
 ## Phase 4 usage
 
 The CLI can explicitly inspect raw packet bytes with `--raw`; otherwise decoded PCAP/PCAPNG application payloads are analyzed when the link/network/transport decoder can identify them. The browser exposes the same choice as “Analyze raw packet headers too”. Exported JSON can be restored through the browser’s saved-project control.
+
+Flow selectors in the browser operate on the normalized flow metadata returned
+by the analysis. `forward` and `reverse` are relative to canonical endpoint A
+and B; selecting a direction changes the visible packet scope without reloading
+the capture. TCP segments remain packet-scoped because stream reassembly is not
+implemented.
 
 
 ## License

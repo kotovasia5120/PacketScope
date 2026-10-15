@@ -47,9 +47,29 @@ The browser client remains dependency-free. Large byte arrays are rendered as
 bounded rows rather than one DOM element per byte. The analysis engine still
 does not reassemble TCP segments or claim that a heuristic is protocol fact.
 
+## Phase 5 — production reliability and browser acceptance
+
+Implemented in the current working tree:
+
+- Atomic, thread-safe job publication/terminal transitions, cooperative
+  cancellation, bounded queues, safe worker errors, result snapshots, cleanup,
+  shutdown handling, and HTTP conflict/timeout semantics.
+- Normalized IPv4/IPv6 TCP/UDP flow grouping with selectable direction and
+  packet-level TCP anomaly notes; TCP stream reassembly remains explicitly
+  out of scope.
+- Versioned reproducible profiles (`default`, `fast`, `deep`, and custom JSON),
+  CLI validation/saving/loading, explicit search budgets, profile fingerprints,
+  and report-level input identity/completeness metadata.
+- Deterministic hypothesis ranking/grouping with heuristic labels and expanded
+  evaluation metrics, plus a pinned Playwright/Chromium suite covering the
+  real server and browser demo/persistence flows.
+
+The local container used for this audit has Python 3.11.2 and no Docker daemon,
+so the pinned Python 3.12.7, Docker, and hosted-CI gates require a later run.
+
 ## P2 — scale and collaboration ergonomics
 
 - Stream large captures with indexed paging.
-- Add reproducible analysis profiles and CLI batch reports.
+- Add indexed capture access and CLI batch reports beyond the bounded profiles.
 - Add optional local plugin hooks with a documented, sandbox-free boundary.
 - Improve keyboard navigation and visual filtering for large hypothesis sets.

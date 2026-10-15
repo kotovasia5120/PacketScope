@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
+import socket
 from email import policy
 from email.parser import BytesParser
 from http import HTTPStatus
@@ -24,6 +26,13 @@ STATIC_DIR = Path(__file__).with_name("static")
 
 class PacketScopeHandler(BaseHTTPRequestHandler):
     server_version = "PacketScope/0.1"
+
+    def setup(self) -> None:
+        super().setup()
+        # A client that advertises a body and then stops must not pin a server
+        # thread forever.  This is deliberately short for the local UI; a
+        # large upload still arrives in one bounded request body.
+        self.connection.settimeout(10.0)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if self.path == "/api/health":
@@ -62,7 +71,10 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "-1"))
                 if length < 0 or length > self.server.limits.max_response_bytes:  # type: ignore[attr-defined]
                     raise ValueError("invalid evaluation request size")
-                value = json.loads(self.rfile.read(length))
+                    body = self._read_body(length)
+                    if body is None:
+                        return
+                    value = json.loads(body)
                 profile = str(value.get("profile", ""))
                 truth = self.server.demo_truth.get(profile)  # type: ignore[attr-defined]
                 if truth is None:
@@ -89,14 +101,17 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         if content_length > limit:
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds size limit"})
             return
-        body = self.rfile.read(content_length)
+        body = self._read_body(content_length)
+        if body is None:
+            return
         if len(body) != content_length:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
             return
         try:
             name, format_name, payload, analyze_raw = _multipart_file(self.headers.get("Content-Type", ""), body)
             imported = import_bytes(name, payload, format_name, self.server.limits)  # type: ignore[attr-defined]
-            result = analyze_packets(imported.packets, limits=self.server.limits, analyze_raw=analyze_raw)  # type: ignore[attr-defined]
+            result = analyze_packets(imported.packets, limits=self.server.limits, analyze_raw=analyze_raw,
+                                     input_sha256=hashlib.sha256(payload).hexdigest())  # type: ignore[attr-defined]
             result["source"] = {
                 "name": name,
                 "format": imported.format,
@@ -139,7 +154,9 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds size limit"})
             return
         try:
-            body = self.rfile.read(content_length)
+            body = self._read_body(content_length)
+            if body is None:
+                return
             if len(body) != content_length:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
                 return
@@ -173,6 +190,13 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
+
+    def _read_body(self, length: int) -> bytes | None:
+        try:
+            return self.rfile.read(length)
+        except (TimeoutError, socket.timeout):
+            self._json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request body read timed out"})
+            return None
 
     def _json(self, status: HTTPStatus, value: dict) -> None:
         payload = dumps_result(value).encode("utf-8")
@@ -227,7 +251,11 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bo
     requested_format = "auto"
     analyze_raw = False
     file_part = None
+    field_count = 0
     for part in message.iter_parts():
+        field_count += 1
+        if field_count > 32:
+            raise ValueError("multipart form has too many fields")
         disposition = part.get_content_disposition()
         field_name = part.get_param("name", header="content-disposition")
         if disposition == "form-data" and field_name == "format":

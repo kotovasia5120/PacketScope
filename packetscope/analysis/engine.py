@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable
 from packetscope.errors import InputLimitError
 from packetscope.flows import group_flows, select_flow_packets
 from packetscope.models import FieldHypothesis, Limits, Packet
+from packetscope.profiles import AnalysisProfile, limits_for_profile, packet_dataset_sha256, profile_report, resolve_profile
 from packetscope.protocols import decode_packet
 from .crc import SearchBudget, discover_checksums
 
@@ -34,8 +35,21 @@ def analyze_packets(
     progress: Callable[[int], None] | None = None,
     selected_direction: str | None = None,
     flow_id: str | None = None,
+    profile: AnalysisProfile | dict | None = None,
+    input_sha256: str | None = None,
 ) -> dict:
     limits = limits or Limits()
+    applied_profile = resolve_profile(profile)
+    # A caller-supplied Limits object is authoritative for the legacy API.
+    # CLI/profile callers pass the profile explicitly and receive its budgets.
+    if profile is not None:
+        limits = limits_for_profile(limits, applied_profile)
+    if selected_direction is None:
+        selected_direction = applied_profile.selected_direction
+    if flow_id is None:
+        flow_id = applied_profile.selected_flow
+    if applied_profile.analysis_scope == "raw_packet":
+        analyze_raw = True
     packet_list: list[Packet] = []
     for packet in packets:
         if cancel and cancel():
@@ -77,18 +91,20 @@ def analyze_packets(
     comparison = _compare(views, limits.max_response_bytes)
     observations["comparison"] = comparison
     observations["byte_statistics"] = _byte_statistics(views, limits.max_response_bytes)
-    observations["alignment"] = _alignment(views)
+    observations["alignment"] = _alignment(views, applied_profile.alignment_mode)
 
     analysis_status = "ok" if len(views) >= 3 else "INSUFFICIENT_EVIDENCE"
     hypotheses: list[dict] = []
     crc_status = "NOT_RUN"
+    crc_candidates = 0
     if analysis_status == "ok":
-        hypotheses = _hypotheses(views, comparison, limits, cancel)
-        crc_findings, crc_status = _crc_hypotheses(views, limits, cancel)
+        hypotheses = _hypotheses(views, comparison, limits, cancel, set(applied_profile.enabled_detectors), applied_profile)
+        crc_findings, crc_status, crc_candidates = _crc_hypotheses(views, limits, cancel, applied_profile)
         for finding in crc_findings:
             if len(hypotheses) >= limits.max_hypotheses:
                 break
             hypotheses.append(finding)
+        hypotheses = _rank_and_group(hypotheses)
     if cancel and cancel():
         analysis_status = "CANCELLED"
     packet_budget = max(0, limits.max_response_bytes // 3)
@@ -116,6 +132,21 @@ def analyze_packets(
             break
         flow_json.append(item)
         flow_bytes += estimated
+    constraints = []
+    if len(packet_json) != len(output_packets):
+        constraints.append("response_size_limit")
+    if len(flow_json) != len(flows):
+        constraints.append("flow_response_limit")
+    if crc_status not in {"NOT_RUN", "COMPLETE"}:
+        constraints.append(f"crc:{crc_status}")
+    reproducibility = profile_report(
+        applied_profile,
+        input_sha256=input_sha256 or packet_dataset_sha256(packet_list),
+        completeness="complete" if analysis_status == "ok" and not constraints else "bounded_or_incomplete",
+        candidates_evaluated=crc_candidates,
+        tested_algorithms=list(applied_profile.crc_algorithms),
+        constraints=constraints,
+    )
     return {
         "schema_version": 2,
         "tool": {"name": "PacketScope", "version": "0.2.0"},
@@ -134,7 +165,9 @@ def analyze_packets(
             "scope": "raw_packet" if analyze_raw else "application_payload",
             "contexts": contexts[:128],
             "crc_status": crc_status,
+            "crc_candidates_tested": crc_candidates,
         },
+        "reproducibility": reproducibility,
         "observations": observations,
         "hypotheses": hypotheses[: limits.max_hypotheses],
         "annotations": _clean_annotations(annotations or []),
@@ -247,7 +280,9 @@ def _byte_statistics(views: list[_View], response_budget: int) -> list[dict]:
     return result
 
 
-def _alignment(views: list[_View]) -> list[dict]:
+def _alignment(views: list[_View], mode: str = "bounded") -> list[dict]:
+    if mode == "offset":
+        return []
     if len(views) < 2 or len(views) > 64:
         return []
     reference = views[0]
@@ -260,7 +295,9 @@ def _alignment(views: list[_View]) -> list[dict]:
     return result
 
 
-def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Callable[[], bool] | None) -> list[dict]:
+def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Callable[[], bool] | None,
+                enabled_detectors: set[str] | None = None,
+                profile: AnalysisProfile | None = None) -> list[dict]:
     if len(views) < 3:
         return []
     findings: list[dict] = []
@@ -269,6 +306,10 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
             return False
         if cancel and cancel():
             return False
+        if enabled_detectors is not None:
+            detector = str(finding.get("field_type", finding.get("kind", "")))
+            if detector not in enabled_detectors:
+                return True
         findings.append(finding)
         return True
 
@@ -299,13 +340,15 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
         add(_make_field("common_suffix", views, start, width, "big", views[0].data[start:aligned].hex(), 0.55, f"all {len(views)} application samples share suffix {views[0].data[start:aligned].hex()}", [], ["trailer", "padding", "ordinary constant"], "A common suffix may be a trailer or padding; its role is not proven."))
 
     max_offset = min(aligned, 128)
-    for width in (1, 2, 4, 8):
+    widths = profile.integer_widths if profile else (1, 2, 4, 8)
+    endians = profile.endianness_options if profile else ("big", "little")
+    for width in widths:
         if width > aligned:
             continue
         for offset in range(max_offset - width + 1):
             if cancel and cancel():
                 return findings
-            for endian in ("big", "little"):
+            for endian in endians:
                 values = [int.from_bytes(view.data[offset:offset + width], endian) for view in views]
                 modulus = 1 << (width * 8)
                 if len(set(values)) > 1 and all((right - left) % modulus == 1 for left, right in zip(values, values[1:])):
@@ -314,11 +357,11 @@ def _hypotheses(views: list[_View], comparison: dict, limits: Limits, cancel: Ca
             if len(findings) >= limits.max_hypotheses:
                 return findings
 
-    for width in (1, 2, 4, 8):
+    for width in widths:
         if width > aligned:
             continue
         for offset in range(max_offset - width + 1):
-            for endian in ("big", "little"):
+            for endian in endians:
                 values = [int.from_bytes(view.data[offset:offset + width], endian) for view in views]
                 lengths = [len(view.data) for view in views]
                 for label, expected in (("total message length", lengths), ("payload length", [length - offset - width for length in lengths]), ("bytes after field", [length - offset for length in lengths])):
@@ -363,11 +406,13 @@ def _make_field(field_type: str, views: list[_View], relative: int, width: int, 
     return result
 
 
-def _crc_hypotheses(views: list[_View], limits: Limits, cancel: Callable[[], bool] | None) -> tuple[list[dict], str]:
+def _crc_hypotheses(views: list[_View], limits: Limits, cancel: Callable[[], bool] | None,
+                    profile: AnalysisProfile | None = None) -> tuple[list[dict], str, int]:
     if cancel and cancel():
-        return [], "CANCELLED"
-    budget = SearchBudget(time_limit_seconds=limits.max_analysis_seconds, max_candidates=limits.max_crc_candidates, max_samples=min(limits.max_packets, 256), max_packet_bytes=limits.max_packet_bytes, max_ranges=limits.max_crc_ranges)
-    result = discover_checksums((view.data for view in views), budget=budget)
+        return [], "CANCELLED", 0
+    budget = SearchBudget(time_limit_seconds=limits.max_analysis_seconds, max_candidates=limits.max_crc_candidates, max_samples=min(limits.max_packets, limits.max_samples), max_packet_bytes=limits.max_packet_bytes, max_ranges=limits.max_crc_ranges)
+    result = discover_checksums((view.data for view in views), budget=budget,
+                                allowed_algorithms=profile.crc_algorithms if profile else None)
     hypotheses: list[dict] = []
     seen_ids: set[str] = set()
     for candidate in result.hypotheses:
@@ -385,7 +430,7 @@ def _crc_hypotheses(views: list[_View], limits: Limits, cancel: Callable[[], boo
         seen_ids.add(identifier)
         item.update({"id": identifier, "kind": field.field_type, "offset": field.absolute_offset, "width": evidence.width, "algorithm": candidate.algorithm, "parameters": asdict(candidate.params) if candidate.params else None, "checksum": {"location": evidence.location, "locations": locations, "byte_order": byte_order, "covered_range": list(evidence.covered_range), "covered_ranges": [list(item) for item in evidence.covered_ranges], "location_mode": evidence.location_mode, "matches": evidence.matches, "samples": evidence.samples, "mismatches": list(evidence.mismatches)}, "locations": [{"packet_id": view.packet.index, "absolute_offset": view.absolute_base + location, "payload_relative_offset": view.payload_relative_base + location if view.payload_relative_base is not None else None} for view, location in zip(views, locations)], "caveats": ["A matching checksum remains a hypothesis until independently verified."]})
         hypotheses.append(item)
-    return hypotheses, result.status
+    return hypotheses, result.status, result.candidates_tested
 
 
 def _clean_annotations(annotations: list[dict]) -> list[dict]:
@@ -403,3 +448,43 @@ def _clean_annotations(annotations: list[dict]) -> list[dict]:
             continue
         cleaned.append({"label": label, "start": start, "end": end, "source": "manual", "field_type": str(item.get("field_type", "custom"))[:40], "endian": str(item.get("endian", "unknown"))[:12], "status": str(item.get("status", "hypothesis"))[:20]})
     return cleaned
+
+
+def _rank_and_group(hypotheses: list[dict]) -> list[dict]:
+    """Rank hypotheses deterministically and retain overlapping explanations."""
+    groups: dict[tuple, list[dict]] = {}
+    for item in hypotheses:
+        field_type = str(item.get("field_type", item.get("kind", "field")))
+        offset = item.get("absolute_offset", item.get("offset"))
+        width = item.get("width", int(item.get("width_bits", 8)) // 8)
+        algorithm = item.get("algorithm")
+        key = (field_type, offset, width, algorithm)
+        groups.setdefault(key, []).append(item)
+    for group_index, items in enumerate(groups.values(), start=1):
+        group_id = f"hypothesis-group-{group_index}"
+        ids = sorted(str(item.get("id", "")) for item in items)
+        for item in items:
+            item["equivalence_group"] = group_id
+            item["group_members"] = ids
+            alternatives = list(item.get("alternative_interpretations", []))
+            for other in items:
+                if other is not item:
+                    label = str(other.get("field_type", other.get("kind", "field")))
+                    if label not in alternatives:
+                        alternatives.append(label)
+            item["alternative_interpretations"] = sorted(set(alternatives))
+            support = max(0, int(item.get("sample_count", 0)))
+            contradictions = len(item.get("contradictions", []))
+            complexity = 1 if item.get("algorithm") or item.get("checksum") else 0
+            item["ranking"] = {
+                "score": round(float(item.get("confidence", 0.0)) + min(0.1, support / 1000)
+                                  - contradictions * 0.05 - complexity * 0.005, 6),
+                "confidence_label": "heuristic",
+                "supporting_samples": support,
+                "contradictions": contradictions,
+                "complexity_penalty": complexity * 0.005,
+            }
+    return sorted(hypotheses, key=lambda item: (
+        -float(item.get("ranking", {}).get("score", item.get("confidence", 0.0))),
+        -int(item.get("sample_count", 0)), str(item.get("id", "")),
+    ))

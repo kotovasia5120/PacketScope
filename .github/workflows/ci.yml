@@ -33,5 +33,29 @@ jobs:
           for attempt in $(seq 1 20); do
             if curl --fail --silent http://127.0.0.1:8765/api/health; then exit 0; fi
             sleep 1
-          done
-          exit 1
+           done
+           exit 1
+
+  browser-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install pinned browser test dependency
+        run: npm ci
+      - name: Install pinned Chromium and Linux dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Run real Chromium acceptance tests
+        run: npm run e2e
+      - name: Upload browser artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packetscope-browser-artifacts
+          path: test-artifacts/

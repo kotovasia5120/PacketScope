@@ -28,6 +28,31 @@ def evaluate_result(result: dict[str, Any], expected: Iterable[dict[str, Any]]) 
         top_k = len(hypotheses)
     top_k = max(0, min(int(top_k), len(hypotheses)))
     top_matches = sum(1 for truth in expected_items if any(_matches(candidate, truth) for candidate in hypotheses[:top_k]))
+    top_k_metrics = {}
+    for requested in (1, 3, 5):
+        actual_k = min(requested, len(hypotheses))
+        matched_at_k = sum(1 for truth in expected_items if any(_matches(candidate, truth) for candidate in hypotheses[:actual_k]))
+        top_k_metrics[f"top_{requested}"] = {
+            "k": requested,
+            "matched": matched_at_k,
+            "recall": matched_at_k / len(expected_items) if expected_items else None,
+        }
+    duplicate_keys = [_duplicate_key(item) for item in hypotheses]
+    duplicate_aware = {
+        "candidate_count": len(hypotheses),
+        "unique_candidate_count": len(set(duplicate_keys)),
+        "duplicate_count": len(duplicate_keys) - len(set(duplicate_keys)),
+    }
+    type_matches = sum(1 for item in matched if item["expected"].get("field_type", item["expected"].get("kind")) ==
+                       next((candidate.get("field_type", candidate.get("kind")) for candidate in hypotheses
+                             if candidate.get("id") == item.get("hypothesis_id")), None))
+    offset_matches = sum(1 for item in matched if _same_offset(item["expected"], next((candidate for candidate in hypotheses if candidate.get("id") == item.get("hypothesis_id")), {})))
+    checksum_matches = sum(1 for item in matched if item["expected"].get("algorithm") and
+                           item["expected"].get("algorithm") == next((candidate.get("algorithm") for candidate in hypotheses if candidate.get("id") == item.get("hypothesis_id")), None))
+    false_positive_breakdown: dict[str, int] = {}
+    for index in false_positive_indices:
+        label = str(hypotheses[index].get("field_type", hypotheses[index].get("kind", "unknown")))
+        false_positive_breakdown[label] = false_positive_breakdown.get(label, 0) + 1
     ranked = [dict(item, rank=index + 1) for index, item in enumerate(hypotheses)]
     return {
         "expected_count": len(expected_items),
@@ -41,6 +66,12 @@ def evaluate_result(result: dict[str, Any], expected: Iterable[dict[str, Any]]) 
         "top_k": top_k,
         "top_k_matched": top_matches,
         "top_k_recall": top_matches / len(expected_items) if expected_items else None,
+        "top_k_metrics": top_k_metrics,
+        "duplicate_aware": duplicate_aware,
+        "field_type_accuracy": type_matches / len(matched) if matched else None,
+        "offset_accuracy": offset_matches / len(matched) if matched else None,
+        "checksum_algorithm_accuracy": checksum_matches / len(matched) if matched else None,
+        "false_positive_breakdown": dict(sorted(false_positive_breakdown.items())),
         "missing": missing,
         "false_positive_count": len(false_positive_indices),
         "false_positive_ids": [hypotheses[index].get("id") for index in false_positive_indices],
@@ -74,3 +105,12 @@ def _matches(candidate: dict[str, Any], truth: dict[str, Any]) -> bool:
     if truth.get("location_mode") is not None and candidate.get("checksum", {}).get("location_mode") != truth["location_mode"]:
         return False
     return True
+
+
+def _duplicate_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    return (item.get("field_type", item.get("kind")), item.get("absolute_offset", item.get("offset")),
+            item.get("width_bits", item.get("width")), item.get("endian"), item.get("algorithm"))
+
+
+def _same_offset(expected: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    return expected.get("absolute_offset", expected.get("offset")) == candidate.get("absolute_offset", candidate.get("offset"))
