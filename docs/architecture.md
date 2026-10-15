@@ -22,7 +22,8 @@ BIN / HEX / PCAP / PCAPNG
           |
    normalized flow/direction view
           |
-           +--> versioned JSON export / protocol schema
+          +--> versioned JSON export / protocol schema
+          +--> baseline/control experiment report
           +--> localhost HTTP API --> vanilla browser UI
 ```
 
@@ -50,6 +51,10 @@ BIN / HEX / PCAP / PCAPNG
   observations as limitations rather than facts. It does not reassemble TCP.
 - `packetscope/profiles.py` validates versioned, bounded analysis configuration,
   applies explicit budgets, and computes a profile fingerprint for reports.
+- `packetscope/experiments.py` compares two bounded captures in an explicitly
+  declared coordinate system. It pairs comparable messages by capture order,
+  reports associated ranges and distribution changes, and records limitations
+  and follow-up experiments; it does not claim causation or replace framing.
 
 The first iteration intentionally uses standard-library parsing and a small
 detector set. Link-layer stream reassembly and advanced CRC families are

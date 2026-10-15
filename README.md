@@ -55,6 +55,10 @@ for private evidence.
 - Versioned, non-executable protocol schema export with inferred/manual origin,
   review status, evidence references, constraints, limitations, overlapping
   fields, and bounded byte validation.
+- Bounded baseline-versus-controlled-change comparison via the CLI, with
+  packet distributions, associated byte ranges, evidence, contradictions, and
+  follow-up experiment suggestions. Correlation is never presented as proof of
+  causation.
 - Server-owned built-in-demo evaluation identities; arbitrary client-submitted
   comparisons are clearly labeled untrusted.
 
@@ -189,6 +193,7 @@ hosted server; it does not make uploaded captures confidential.
 
 ```bash
 python3 -m packetscope.cli analyze sample.bin --format auto --pretty
+python3 -m packetscope.cli compare baseline.bin changed.bin --pretty
 python3 -m packetscope.cli analyze sample.pcap --direction forward --profile fast --pretty
 python3 -m packetscope.cli profile save deep --output deep-profile.json
 python3 -m packetscope.cli profile validate deep-profile.json
