@@ -22,7 +22,30 @@ Implemented in the current branch:
 - Deterministic synthetic corpora A–D, malformed/insufficient evidence/resource tests, JSON round-trip checks, and protocol-layer offset regression coverage.
 - Overview/Compare/Fields/CRC tabs, safe DOM rendering, byte highlighting, evidence display, manual confirmation/rejection annotations, raw-analysis control, local annotation/project restoration, and request cancellation.
 
-**Remaining Phase 3 work:** server-side progress/cancellation for long analysis, richer grouping/direction controls, and a browser-level end-to-end evaluation harness are not yet implemented.
+**Status:** Implemented and covered by the pinned-runtime CI/Docker verification
+record in the README.
+
+## Phase 4 — reliability, interactive reverse engineering, and demo
+
+Implemented in the current branch:
+
+- Deterministic, loadable multi-packet demo profiles for CRC-16 big-endian and
+  CRC-32 little-endian with variable message lengths and counter overflow.
+- Independent demo ground truth, explicit post-investigation evaluation, and
+  precision/recall/F1 plus top-k ranking. Empty-ground-truth recall is N/A.
+- Correct per-packet CRC locations for end-relative checksums, deterministic
+  hypothesis IDs, and no automatic confirmation.
+- Source-preserving importer/analyzer warnings and a bounded single-worker job
+  lifecycle with progress and cooperative cancellation endpoints.
+- Interactive packet comparison with two-or-more packet selection, raw versus
+  application payloads, offset/sequence alignment, diff navigation, bounded
+  HEX/ASCII rendering, field highlighting, search, and go-to-offset controls.
+- Content-derived annotation identity, validated project restoration, manual
+  annotation export, and accessible loading/empty/error states.
+
+The browser client remains dependency-free. Large byte arrays are rendered as
+bounded rows rather than one DOM element per byte. The analysis engine still
+does not reassemble TCP segments or claim that a heuristic is protocol fact.
 
 ## P2 — scale and collaboration ergonomics
 

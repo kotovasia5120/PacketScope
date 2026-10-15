@@ -6,7 +6,10 @@ from typing import Any, Iterable
 
 def evaluate_result(result: dict[str, Any], expected: Iterable[dict[str, Any]]) -> dict[str, Any]:
     expected_items = list(expected)
-    hypotheses = list(result.get("hypotheses", []))
+    hypotheses = sorted(
+        (item for item in result.get("hypotheses", []) if isinstance(item, dict)),
+        key=lambda item: (-float(item.get("confidence", 0.0)), str(item.get("id", ""))),
+    )
     used: set[int] = set()
     matched: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
@@ -18,15 +21,33 @@ def evaluate_result(result: dict[str, Any], expected: Iterable[dict[str, Any]]) 
         used.add(match_index)
         matched.append({"expected": truth, "hypothesis_id": hypotheses[match_index].get("id")})
     false_positive_indices = [index for index in range(len(hypotheses)) if index not in used]
+    precision = len(matched) / len(hypotheses) if hypotheses else (1.0 if not expected_items else 0.0)
+    recall = len(matched) / len(expected_items) if expected_items else None
+    top_k = result.get("top_k")
+    if top_k is None:
+        top_k = len(hypotheses)
+    top_k = max(0, min(int(top_k), len(hypotheses)))
+    top_matches = sum(1 for truth in expected_items if any(_matches(candidate, truth) for candidate in hypotheses[:top_k]))
+    ranked = [dict(item, rank=index + 1) for index, item in enumerate(hypotheses)]
     return {
         "expected_count": len(expected_items),
         "matched_count": len(matched),
-        "accuracy": (len(matched) / len(expected_items)) if expected_items else 1.0,
+        "precision": precision,
+        "recall": recall,
+        "f1": (2 * precision * recall / (precision + recall)) if recall is not None and precision + recall else (0.0 if recall == 0 else None),
+        "matched": len(matched),
+        "unmatched": len(false_positive_indices) if 'false_positive_indices' in locals() else 0,
+        "missed": len(expected_items) - len(matched),
+        "top_k": top_k,
+        "top_k_matched": top_matches,
+        "top_k_recall": top_matches / len(expected_items) if expected_items else None,
         "missing": missing,
         "false_positive_count": len(false_positive_indices),
         "false_positive_ids": [hypotheses[index].get("id") for index in false_positive_indices],
         "automatic_confirmed_count": sum(candidate.get("status") == "confirmed" for candidate in hypotheses),
-        "matched": matched,
+        "matched_items": matched,
+        "ranking": ranked,
+        "recall_applicable": bool(expected_items),
     }
 
 

@@ -149,7 +149,22 @@ def _packet_json(packet: Packet, payload_budget: int | None = None) -> dict:
     payload = packet.payload[: max(0, payload_budget // 2)]
     item["payload"] = payload.hex()
     item["payload_truncated"] = len(payload) != len(packet.payload)
-    item["protocol"] = decode_packet(packet)
+    item["raw_payload"] = payload.hex()
+    decoded = decode_packet(packet)
+    transport = decoded.get("transport") or decoded.get("network", {}).get("transport")
+    if isinstance(transport, dict) and transport.get("status") == "ok":
+        start = int(transport.get("payload_offset", 0))
+        length = int(transport.get("payload_length", 0))
+        application = packet.payload[start:start + length]
+        application = application[: max(0, payload_budget // 2)]
+        item["application_payload"] = application.hex()
+        item["application_payload_truncated"] = len(application) != length
+        item["application_payload_offset"] = start
+    else:
+        item["application_payload"] = payload.hex()
+        item["application_payload_truncated"] = item["payload_truncated"]
+        item["application_payload_offset"] = 0
+    item["protocol"] = decoded
     return item
 
 
@@ -323,6 +338,7 @@ def _crc_hypotheses(views: list[_View], limits: Limits, cancel: Callable[[], boo
     budget = SearchBudget(time_limit_seconds=limits.max_analysis_seconds, max_candidates=limits.max_crc_candidates, max_samples=min(limits.max_packets, 256), max_packet_bytes=limits.max_packet_bytes, max_ranges=limits.max_crc_ranges)
     result = discover_checksums((view.data for view in views), budget=budget)
     hypotheses: list[dict] = []
+    seen_ids: set[str] = set()
     for candidate in result.hypotheses:
         evidence = candidate.evidence
         view = views[0]
@@ -330,7 +346,13 @@ def _crc_hypotheses(views: list[_View], limits: Limits, cancel: Callable[[], boo
         confidence = min(0.96, 0.5 + 0.08 * math.log2(max(2, evidence.samples)) - 0.015 * math.log2(max(2, result.candidates_tested)))
         field = FieldHypothesis("crc" if candidate.algorithm.startswith("CRC") else "checksum", view.packet.index, view.absolute_base + evidence.location, view.payload_relative_base + evidence.location if view.payload_relative_base is not None else None, evidence.width * 8, evidence.byte_order, values, confidence, [{"packet_ids": [item.packet.index for item in views[:64]], "rationale": f"{candidate.algorithm} matched {evidence.matches}/{evidence.samples} independent samples", "covered_range": list(evidence.covered_range), "covered_ranges": [list(item) for item in evidence.covered_ranges], "location_mode": evidence.location_mode, "mismatches": list(evidence.mismatches)}], [], evidence.samples, "hypothesis", ["another checksum range", "coincidental match"])
         item = field.as_dict()
-        item.update({"id": f"{candidate.algorithm}:{field.absolute_offset}:{evidence.width}:{evidence.byte_order}", "kind": field.field_type, "offset": field.absolute_offset, "width": evidence.width, "algorithm": candidate.algorithm, "parameters": asdict(candidate.params) if candidate.params else None, "checksum": {"location": evidence.location, "byte_order": evidence.byte_order, "covered_range": list(evidence.covered_range), "covered_ranges": [list(item) for item in evidence.covered_ranges], "location_mode": evidence.location_mode, "matches": evidence.matches, "samples": evidence.samples, "mismatches": list(evidence.mismatches)}, "caveats": ["A matching checksum remains a hypothesis until independently verified."]})
+        byte_order = "big" if evidence.width == 1 else evidence.byte_order
+        locations = list(evidence.locations) or [evidence.location]
+        identifier = f"{candidate.algorithm}:{evidence.location_mode}:{evidence.width}:{byte_order}:{','.join(map(str, locations))}"
+        if identifier in seen_ids:
+            continue
+        seen_ids.add(identifier)
+        item.update({"id": identifier, "kind": field.field_type, "offset": field.absolute_offset, "width": evidence.width, "algorithm": candidate.algorithm, "parameters": asdict(candidate.params) if candidate.params else None, "checksum": {"location": evidence.location, "locations": locations, "byte_order": byte_order, "covered_range": list(evidence.covered_range), "covered_ranges": [list(item) for item in evidence.covered_ranges], "location_mode": evidence.location_mode, "matches": evidence.matches, "samples": evidence.samples, "mismatches": list(evidence.mismatches)}, "locations": [{"packet_id": view.packet.index, "absolute_offset": view.absolute_base + location, "payload_relative_offset": view.payload_relative_base + location if view.payload_relative_base is not None else None} for view, location in zip(views, locations)], "caveats": ["A matching checksum remains a hypothesis until independently verified."]})
         hypotheses.append(item)
     return hypotheses, result.status
 

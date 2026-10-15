@@ -11,7 +11,7 @@ from packetscope.evaluation import evaluate_result
 from packetscope.export import dumps_result
 from packetscope.importers import import_bytes
 from packetscope.models import Limits
-from packetscope.web import serve
+from packetscope.web import _merge_warnings, serve
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         "packet_count": len(imported.packets),
         "byte_count": len(data),
     }
-    result["warnings"] = imported.warnings
+    result["warnings"] = _merge_warnings(result.get("warnings", []), imported.warnings)
     rendered = dumps_result(result, args.pretty) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")

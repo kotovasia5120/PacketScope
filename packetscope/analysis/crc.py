@@ -41,6 +41,7 @@ class ChecksumEvidence:
     samples: int
     location_mode: str = "absolute"
     covered_ranges: tuple[tuple[int, int], ...] = ()
+    locations: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -175,7 +176,7 @@ def discover_checksums(samples: Iterable[bytes], *, budget: SearchBudget = Searc
                         mismatches.append({"sample": sample_index, "expected": expected, "actual": actual, "location": location})
                 if matches == len(packets):
                     covered_ranges = ((0, representative_location), (representative_location + width, len(packets[0])))
-                    hypotheses.append(ChecksumHypothesis(name, params, ChecksumEvidence(representative_location, width, order, (0, len(packets[0])), tuple(mismatches), matches, len(packets), mode, covered_ranges)))
+                    hypotheses.append(ChecksumHypothesis(name, params, ChecksumEvidence(representative_location, width, order, (0, len(packets[0])), tuple(mismatches), matches, len(packets), mode, covered_ranges, tuple(locations))))
     return DiscoveryResult(tuple(hypotheses), "COMPLETE", candidates_tested)
 
 

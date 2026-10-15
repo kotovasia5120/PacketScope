@@ -5,8 +5,8 @@ unknown binary protocols. Load synthetic or real packet captures, compare bytes,
 inspect HEX/ASCII, and record evidence-backed hypotheses without sending data to
 cloud AI or external APIs.
 
-> **Status:** Phase 3 analysis engine and local evidence UI. Automatic findings are
-> hypotheses, not confirmed protocol facts.
+> **Status:** Phase 4 reliability and interactive demonstration slice. Automatic
+> findings remain hypotheses, not confirmed protocol facts.
 
 ## What works in this iteration
 
@@ -18,6 +18,14 @@ cloud AI or external APIs.
 - Cautious candidates for magic bytes, counters, lengths, bit flags, message types, alignment, and checksums/CRCs.
 - Unified field evidence with separate raw-packet and application-payload offsets.
 - Manual field annotations and versioned JSON export.
+- One-click deterministic demo captures for CRC-16/big-endian and
+  CRC-32/little-endian (including counter overflow), with a separate reference
+  evaluation that is shown only after the investigation is requested.
+- Comparison workspace with packet selection, offset/sequence alignment,
+  bounded HEX/ASCII panes, difference navigation, and synchronized scrolling.
+- Content-hashed annotation persistence, source-preserving diagnostics, and a
+  bounded single-worker server job lifecycle (`QUEUED` → `IMPORTING` →
+  `ANALYZING` → `COMPLETE`/`FAILED`/`CANCELLED`).
 - Bounded uploads and no telemetry, cloud AI, or execution of packet contents.
 - Basic Ethernet, IPv4/IPv6, TCP, and UDP metadata decoding without fragment
   reassembly; unsupported link types remain raw and explicitly unsupported.
@@ -43,12 +51,14 @@ Docker is the reproducible Linux x86-64 path:
 
 ```bash
 docker build -t packetscope:local .
-docker run --rm --network none -p 127.0.0.1:8765:8765 packetscope:local
+docker run --rm --network none packetscope:local make test
+docker run --rm -p 127.0.0.1:8765:8765 packetscope:local
 ```
 
-The image runs the offline test suite during `docker build`. Use
-`--network none` when running it to verify the application makes no network
-requests.
+The image runs the offline test suite during `docker build`. The first command
+is the isolated offline-test check. The second command is the HTTP
+demonstration; it must not use `--network none` because the exposed port is the
+browser's local connection to the application.
 
 Offline test and HTTP demonstration are separate operations. The container
 listens on `0.0.0.0` so port forwarding works, while the documented host
@@ -65,7 +75,8 @@ python3 -m packetscope.cli evaluate result.json ground-truth.json --pretty
 
 `evaluate` is intentionally a separate post-analysis step: it compares exported
 hypotheses against a truth file without exposing the truth during analysis and
-reports accuracy, missing fields, and false positives.
+reports precision, recall, F1, top-k ranking, missing fields, and unmatched
+hypotheses. Recall is reported as not applicable for an empty truth set.
 
 All JSON findings include evidence and caveats. A field is never described as
 confirmed merely because a heuristic matched.
@@ -78,20 +89,33 @@ See [`docs/architecture.md`](docs/architecture.md) and
 
 ## Verification record
 
-The current container has Python 3.11.2, while the supported runtime is pinned to Python 3.12.7. Docker and the GitHub CLI are not installed, so those gates are explicitly blocked/unverified rather than reported as passing.
+The pre-Phase-4 baseline `HEAD` was `57f44270bce993f6c8b52d97cf66d54bab00ffee`,
+matching the verified commit for the recorded GitHub Actions run
+`38736191414`. That run completed successfully for both `tests` and `docker`.
+The Phase-4 changes below are new work and must receive a new CI run; the
+baseline PASS is not attributed to this changed tree.
 
 | Command or gate | Result |
 | --- | --- |
-| `python -m unittest discover -s tests -p 'test_*.py' -v` | **PASS** — 34 tests under Python 3.11.2; useful functional evidence, not pinned-runtime verification |
-| `make test` | **BLOCKED** — correctly refused Python 3.11.2 |
+| `python -m unittest discover -s tests -p 'test_*.py' -v` | **PASS** — 40 tests in the local development environment |
+| `make test` | **PASS for the pre-Phase-4 baseline in the pinned CI/Docker environment; rerun required for this tree** |
 | `python -m compileall -q packetscope tests` | **PASS** |
-| `node --check packetscope/static/app.js` | **PASS** — when Node is available in the verification container |
-| `docker version` / `docker build` | **BLOCKED** — Docker CLI unavailable |
-| GitHub Actions run | **UNVERIFIED** — `gh` CLI unavailable and no run receipt is present in this checkout |
+| `node --check packetscope/static/app.js` | **PASS** |
+| `docker run --rm --network none packetscope:local make test` | **PASS for the pre-Phase-4 baseline; rerun required for this tree** |
+| GitHub Actions run `38736191414` at `57f4427` | **PASS** — `tests` and `docker` jobs for the baseline commit |
 
 The mandatory tests are offline and use only deterministic synthetic fixtures. CRC reference values and parameters are documented in [`docs/crc.md`](docs/crc.md).
 
-## Phase 3 usage
+## Interactive demonstration
+
+Start the server, open the browser, and click **Load demo**. Choose two or more
+packets in **Compare**, switch between offset and bounded sequence alignment,
+inspect the field and CRC tabs, add a manual annotation, export the JSON, and
+restore it with **Restore saved project**. The **Evaluate reference** action is
+deliberately separate from analysis so the analyzer never consumes its ground
+truth.
+
+## Phase 4 usage
 
 The CLI can explicitly inspect raw packet bytes with `--raw`; otherwise decoded PCAP/PCAPNG application payloads are analyzed when the link/network/transport decoder can identify them. The browser exposes the same choice as “Analyze raw packet headers too”. Exported JSON can be restored through the browser’s saved-project control.
 
