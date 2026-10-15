@@ -74,6 +74,20 @@ Open <http://127.0.0.1:8765>. Upload a `.bin`, `.hex`, `.pcap`, or `.pcapng`
 file. The default upload limit is 256 MiB; individual packets are limited to
 16 MiB and the capture to 100,000 packets.
 
+### WSL sandbox
+
+In the OmniRush WSL sandbox, `make test` and `make serve` automatically prefer
+the workspace-provided pinned Python 3.12.7 interpreter under `.runtime/`.
+Outside that sandbox, install Python 3.12.7 or pass its executable explicitly:
+
+```bash
+make PYTHON=/path/to/python3.12 test
+make PYTHON=/path/to/python3.12 serve
+```
+
+An explicit `PYTHON=...` value always takes precedence over automatic runtime
+detection.
+
 ## Clean Linux build and installation
 
 Install Python **3.12.7** before running these commands; the repository does

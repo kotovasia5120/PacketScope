@@ -1,5 +1,9 @@
 .DEFAULT_GOAL := test
-PYTHON ?= python3
+# OmniRush's WSL sandbox provides the pinned interpreter inside the workspace.
+# Prefer it automatically, then a system python3.12, while keeping an explicit
+# `make PYTHON=...` override available for CI and local development.
+PINNED_PYTHON := .runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12
+PYTHON ?= $(if $(wildcard $(PINNED_PYTHON)),$(PINNED_PYTHON),$(if $(shell command -v python3.12 2>/dev/null),python3.12,python3))
 
 .PHONY: test serve wheel check-runtime
 
