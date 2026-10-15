@@ -92,10 +92,15 @@ survives new unseen seeds rather than only A–D.
 
 ## Next actions and blockers
 
-1. Run the final Python suite with Python 3.12.7 and record the exact command.
-2. Run Docker build, offline container test, and localhost health smoke test;
-   if Docker is unavailable, keep the gate **BLOCKED**.
-3. Run the reproducible evaluation script and final Chromium suite after the
-   documentation changes; retain successful screenshots and failure traces.
-4. Review `git diff`, create the documentation/release commit, and leave the
-   working tree clean. Do not push without explicit authorization.
+1. Run Docker build and the offline container test; Docker is unavailable in
+   this environment, so keep that gate **BLOCKED**.
+2. Obtain a hosted GitHub Actions run on this HEAD without pushing from this
+   session; until then keep hosted CI **UNVERIFIED**.
+3. Preserve the successful Chromium screenshots and performance JSON under
+   ignored `test-artifacts/` when transferring the release evidence.
+4. Do not push without explicit authorization; the local branch remains ahead
+   of `origin/main`.
+
+The final local pass after documentation changes reran the pinned Python test,
+the full Chromium suite with the pinned Python server, the offline evaluation
+script, JavaScript syntax validation, and `git diff --check`.
