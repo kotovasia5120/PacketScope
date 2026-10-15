@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("input", type=Path)
     analyze.add_argument("--format", choices=("auto", "bin", "hex", "pcap", "pcapng"), default="auto")
     analyze.add_argument("--pretty", action="store_true")
+    analyze.add_argument("--raw", action="store_true", help="analyze raw packet bytes instead of decoded application payloads")
     analyze.add_argument("--output", type=Path)
     server = subparsers.add_parser("serve", help="start the local browser server")
     server.add_argument("--host", default="127.0.0.1")
@@ -43,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
             f"input is {len(data)} bytes; limit is {limits.max_input_bytes}"
         )
     imported = import_bytes(args.input.name, data, args.format, limits)
-    result = analyze_packets(imported.packets, limits=limits)
+    result = analyze_packets(imported.packets, limits=limits, analyze_raw=args.raw)
     result["source"] = {
         "name": args.input.name,
         "format": imported.format,

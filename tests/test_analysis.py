@@ -13,7 +13,7 @@ class AnalysisTests(unittest.TestCase):
             Packet(2, bytes([0xAA, 0xBB, 0x12, 0x04, 0x01, 0x00])),
         ]
         result = analyze_packets(packets, annotations=[{"label": "type", "start": 0, "end": 1}])
-        self.assertEqual(result["schema_version"], 1)
+        self.assertEqual(result["schema_version"], 2)
         self.assertEqual(result["observations"]["comparison"]["regions"][0]["kind"], "constant")
         kinds = {item["kind"] for item in result["hypotheses"]}
         self.assertIn("magic_bytes", kinds)

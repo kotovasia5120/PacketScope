@@ -1,0 +1,6 @@
+{
+  "set_a": {"fields": ["magic", "message_type", "sequence_counter", "length", "crc"]},
+  "set_b": {"fields": ["magic", "flags", "sequence_counter", "crc"]},
+  "set_c": {"alignment": "insertions-and-deletions"},
+  "set_d": {"crc": false, "confirmed": false}
+}
