@@ -78,6 +78,27 @@ class WebIntegrationTests(unittest.TestCase):
         with self.request("/api/health") as response:
             self.assertEqual(response.status, 200)
 
+    def test_demo_evaluation_uses_server_owned_identity(self):
+        self.server.limits = Limits(max_input_bytes=2 * 1024 * 1024)
+        with self.request("/api/demo?profile=crc16-be") as response:
+            result = json.load(response)
+        evaluation_id = result["demo"]["evaluation_id"]
+        modified = dict(result)
+        modified["hypotheses"] = []
+        body = json.dumps({"profile": "crc16-be", "evaluation_id": evaluation_id, "result": modified}).encode()
+        with self.request("/api/demo/evaluate", "POST", body, "application/json") as response:
+            evaluation = json.load(response)
+        self.assertTrue(evaluation["trusted"])
+        self.assertEqual(evaluation["evaluation_mode"], "server_recomputed_reference")
+        self.assertGreater(evaluation["matched_count"], 0)
+
+        with self.request("/api/demo?profile=crc32-le") as response:
+            json.load(response)
+        wrong_profile = json.dumps({"profile": "crc32-le", "evaluation_id": evaluation_id}).encode()
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/demo/evaluate", "POST", wrong_profile, "application/json")
+        self.assertEqual(context.exception.code, 409)
+
     def test_demo_evaluation_rejects_client_errors_and_recovers(self):
         cases = [
             (b"{", "application/json", 400),

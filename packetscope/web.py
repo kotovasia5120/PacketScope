@@ -4,6 +4,7 @@ import json
 import hashlib
 import mimetypes
 import socket
+import uuid
 from email import policy
 from email.parser import BytesParser
 from http import HTTPStatus
@@ -65,7 +66,20 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid demo selection"})
                 return
             self.server.demo_truth[profile] = demo["ground_truth"]  # type: ignore[attr-defined]
-            result["demo"] = {"profile": profile, "metadata": demo["metadata"], "evaluation_available": True}
+            evaluation_id = uuid.uuid4().hex
+            self.server.demo_records[evaluation_id] = {  # type: ignore[attr-defined]
+                "profile": profile,
+                "result": json.loads(dumps_result(result)),
+            }
+            while len(self.server.demo_records) > 8:  # type: ignore[attr-defined]
+                del self.server.demo_records[next(iter(self.server.demo_records))]  # type: ignore[attr-defined]
+            result["demo"] = {
+                "profile": profile,
+                "metadata": demo["metadata"],
+                "evaluation_available": True,
+                "evaluation_id": evaluation_id,
+                "evaluation_mode": "server_recomputed_reference",
+            }
             self._json(HTTPStatus.OK, result)
             return
         if self.path.startswith("/api/jobs/"):
@@ -244,25 +258,48 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             return
         profile = value.get("profile")
         result = value.get("result")
+        evaluation_id = value.get("evaluation_id")
         if not isinstance(profile, str) or not profile:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation profile is required"})
             return
         if profile not in {"crc16-be", "crc32-le"}:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "unknown evaluation profile"})
             return
+        if not (isinstance(evaluation_id, str) and evaluation_id):
+            if not isinstance(result, dict):
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation result is required for untrusted comparison"})
+                return
+            untrusted_hypotheses = result.get("hypotheses", [])
+            if not isinstance(untrusted_hypotheses, list) or len(untrusted_hypotheses) > self.server.limits.max_hypotheses:  # type: ignore[attr-defined]
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation hypotheses exceed the configured limit"})
+                return
+        truth = self.server.demo_truth.get(profile)  # type: ignore[attr-defined]
+        if truth is None:
+            self._json(HTTPStatus.CONFLICT, {"error": "demo evaluation is not available"})
+            return
+        trusted = False
+        if isinstance(evaluation_id, str) and evaluation_id:
+            record = self.server.demo_records.get(evaluation_id)  # type: ignore[attr-defined]
+            if record is None:
+                self._json(HTTPStatus.CONFLICT, {"error": "evaluation identity is unknown or expired"})
+                return
+            if record.get("profile") != profile:
+                self._json(HTTPStatus.CONFLICT, {"error": "evaluation identity does not match the selected profile"})
+                return
+            result = record.get("result")
+            trusted = True
         if not isinstance(result, dict):
-            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation result is required"})
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation result is required for untrusted comparison"})
             return
         hypotheses = result.get("hypotheses", [])
         if not isinstance(hypotheses, list) or len(hypotheses) > self.server.limits.max_hypotheses:  # type: ignore[attr-defined]
             self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation hypotheses exceed the configured limit"})
             return
-        truth = self.server.demo_truth.get(profile)  # type: ignore[attr-defined]
-        if truth is None:
-            self._json(HTTPStatus.CONFLICT, {"error": "demo evaluation is not available"})
-            return
         try:
-            self._json(HTTPStatus.OK, evaluate_result(result, truth))
+            evaluation = evaluate_result(result, truth)
+            evaluation["evaluation_mode"] = "server_recomputed_reference" if trusted else "client_submitted_untrusted"
+            evaluation["trusted"] = trusted
+            self._json(HTTPStatus.OK, evaluation)
         except (TypeError, ValueError, KeyError):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "evaluation result has an invalid shape"})
         except Exception:
@@ -296,6 +333,7 @@ class PacketScopeServer(ThreadingHTTPServer):
         super().__init__(address, PacketScopeHandler)
         self.limits = limits or Limits()
         self.demo_truth: dict[str, list[dict]] = {}
+        self.demo_records: dict[str, dict] = {}
         self.analysis_manager = AnalysisManager(self.limits)
 
     def server_close(self) -> None:
