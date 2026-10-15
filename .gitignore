@@ -14,3 +14,4 @@ build/
 results/
 node_modules/
 test-artifacts/
+.runtime/
