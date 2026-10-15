@@ -125,12 +125,15 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes]:
     if not message.is_multipart():
         raise ValueError("invalid multipart body")
     requested_format = "auto"
+    file_part = None
     for part in message.iter_parts():
         disposition = part.get_content_disposition()
         field_name = part.get_param("name", header="content-disposition")
         if disposition == "form-data" and field_name == "format":
             requested_format = (part.get_content() or "auto").strip().lower()
         if disposition == "form-data" and field_name in {"file", "packet"}:
-            filename = part.get_filename() or "upload.bin"
-            return filename[:200], requested_format, part.get_payload(decode=True) or b""
+            file_part = part
+    if file_part is not None:
+        filename = file_part.get_filename() or "upload.bin"
+        return filename[:200], requested_format, file_part.get_payload(decode=True) or b""
     raise ValueError("multipart field 'file' is required")
