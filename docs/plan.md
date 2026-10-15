@@ -97,3 +97,24 @@ Python 3.12.7 execution, Docker build/offline test, and a hosted GitHub Actions
 run on this HEAD must be recorded before claiming a complete competition
 release. External importer validation is documented separately and does not
 claim application-protocol reverse engineering.
+
+## Phase 7 — evidence quality and final release candidate
+
+Implemented locally in the current working tree:
+
+- Ambiguity-aware scalar interpretations with overlap groups, evidence-quality
+  metadata, deterministic heuristic ranking, and explicit next-observation
+  guidance. The independent holdout's 16-bit little-endian length is retained
+  alongside its viable 8-bit projection rather than being arbitrarily forced.
+- Root-cause-driven false-positive reductions for nested counters, flag/type
+  aliases, and the previous length-candidate generation bug.
+- Exact and alternative-group-aware evaluation metrics plus fixed-seed
+  development, validation, and frozen-holdout generators.
+- Server-owned built-in-demo evaluation identities, explicit untrusted client
+  comparison mode, and tamper/wrong-profile regression coverage.
+- Versioned non-executable protocol schema export/import/application with
+  overlap, variable-length, invalid-schema, manual-origin, and review-status
+  coverage, plus browser schema export and apply controls.
+
+Docker and a hosted CI run on the final release commit remain release gates;
+see [`docs/phase7-progress.md`](phase7-progress.md).

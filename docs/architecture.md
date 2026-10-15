@@ -22,7 +22,7 @@ BIN / HEX / PCAP / PCAPNG
           |
    normalized flow/direction view
           |
-          +--> versioned JSON export
+           +--> versioned JSON export / protocol schema
           +--> localhost HTTP API --> vanilla browser UI
 ```
 
@@ -37,6 +37,9 @@ BIN / HEX / PCAP / PCAPNG
   reassemble packets. Unknown link types remain raw and are marked
   `unsupported_link_type`.
 - `packetscope/export.py` owns the stable JSON shape and annotation merge.
+- `packetscope/schema.py` validates and applies the versioned, non-executable
+  protocol schema. It permits overlapping and variable-range descriptions and
+  only reads bounded imported bytes; it never generates parser code.
 - `packetscope/web.py` exposes only local, bounded HTTP operations and serves
   static assets.
 - `packetscope/static/` is a dependency-free presentation layer.
@@ -82,3 +85,9 @@ input SHA-256, profile JSON and fingerprint, completeness, tested algorithms,
 candidate count, and constraints that stopped bounded searches. The confidence
 and ranking fields are explicitly labelled heuristic and are not calibrated
 probabilities.
+
+Scalar detector candidates may share an `interpretation_group` when their byte
+ranges overlap. The group records viable widths and endianness without choosing
+one as fact. Each candidate also carries an evidence basis, observed sample
+count, caveats, and deterministic “what would help” observations. Manual
+schema fields are separate, reviewable records with origin and review status.

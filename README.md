@@ -5,7 +5,7 @@ unknown binary protocols. Load synthetic or real packet captures, compare bytes,
 inspect HEX/ASCII, and record evidence-backed hypotheses without sending data to
 cloud AI or external APIs.
 
-> **Status:** Phase 6 release-candidate slice. Automatic findings remain heuristic
+> **Status:** Phase 7 release-candidate slice. Automatic findings remain heuristic
 > hypotheses, not confirmed protocol facts.
 
 ## What works in this iteration
@@ -40,6 +40,14 @@ cloud AI or external APIs.
 - Versioned `default`, `fast`, `deep`, and custom analysis profiles with bounded
   budgets, SHA-256 input identity, profile fingerprints, and reproducibility
   metadata in every analysis report.
+- Overlapping interpretation groups, deterministic evidence-quality ranking,
+  and field-specific “What would help confirm this?” guidance. Widths are not
+  promoted merely because they match a corpus.
+- Versioned, non-executable protocol schema export with inferred/manual origin,
+  review status, evidence references, constraints, limitations, overlapping
+  fields, and bounded byte validation.
+- Server-owned built-in-demo evaluation identities; arbitrary client-submitted
+  comparisons are clearly labeled untrusted.
 
 ## Quick start
 
@@ -103,14 +111,13 @@ See [`docs/architecture.md`](docs/architecture.md) and
 
 ## Verification record
 
-The pre-Phase-4 baseline and its CI result are retained for historical context
-only. Results below are for the Phase-5 working tree and are not attributed to
-that older run.
+Historical phase results are retained for context only. The current evidence
+and unresolved gates are recorded in [`docs/phase7-progress.md`](docs/phase7-progress.md).
 
 | Command or gate | Result |
 | --- | --- |
-| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 77 tests on Python 3.12.7 |
-| `python3 -m unittest discover -s tests -p 'test_*.py'` | **PASS** — 77 tests on host Python 3.11.2 compatibility check |
+| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — current count in [`docs/phase7-progress.md`](docs/phase7-progress.md) |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | **BLOCKED** — host Python 3.11.2 fails the pinned-runtime gate |
 | `node --check packetscope/static/app.js` plus E2E JS files | **PASS** |
 | `npm run e2e` with local Chromium server | **PASS** — 5 browser tests |
 | HTTP `/api/health` smoke test | **PASS** — real local server |
@@ -121,13 +128,12 @@ that older run.
 The mandatory tests are offline and use only deterministic synthetic fixtures. CRC reference values and parameters are documented in [`docs/crc.md`](docs/crc.md).
 
 The independent holdout corpus is not available to the analyzer at runtime.
-Run `python3 -m tests.phase6_evaluate` for the reproducible table. The
-measured post-analysis evaluation (heuristic detector metrics, not
-probabilities) remains: A precision 0.400 / recall 1.000 / F1 0.571; B
-precision 0.429 / recall 1.000 / F1 0.600; C and D have no applicable recall;
-the independent holdout has precision 0.222 / recall 0.667 / F1 0.333. The
-false-positive breakdown and limitations are documented in
-[`docs/phase6-evaluation.md`](docs/phase6-evaluation.md).
+Run `python3 -m tests.phase6_evaluate` for exact metrics and
+`python3 -m tests.phase7_evaluate` for fixed-seed development, validation, and
+frozen-holdout exact and alternative-group-aware metrics. These are heuristic
+metrics, not probabilities. Results are recorded in
+[`docs/phase7-progress.md`](docs/phase7-progress.md); historical limitations
+remain in [`docs/phase6-evaluation.md`](docs/phase6-evaluation.md).
 
 ## Browser E2E
 
@@ -151,10 +157,10 @@ those artifacts only on failure.
 
 Start the server, open the browser, and click **Load demo**. Choose two or more
 packets in **Compare**, switch between offset and bounded sequence alignment,
-inspect the field and CRC tabs, add a manual annotation, export the JSON, and
-restore it with **Restore saved project**. The **Evaluate reference** action is
-deliberately separate from analysis so the analyzer never consumes its ground
-truth.
+inspect the field and CRC tabs, compare an interpretation group, add a manual
+annotation, export the JSON and protocol schema, and restore it with
+**Restore saved project**. Built-in **Evaluate reference** uses a server-owned
+analysis identity; arbitrary client-submitted metrics are explicitly untrusted.
 
 ## Phase 4 usage
 
@@ -178,8 +184,8 @@ Wireshark, and Kaitai samples is recorded in
 [`docs/external-fixture-validation.md`](docs/external-fixture-validation.md).
 The files are not vendored. Browser screenshots, traces, and performance JSON
 are generated under the ignored `test-artifacts/` directory by the real
-Chromium suite. Phase-6 acceptance status and remaining Docker/CI blockers are
-tracked in [`docs/phase6-progress.md`](docs/phase6-progress.md).
+Chromium suite. Phase-7 acceptance status and remaining Docker/CI blockers are
+tracked in [`docs/phase7-progress.md`](docs/phase7-progress.md).
 
 
 ## License
