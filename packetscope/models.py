@@ -72,7 +72,7 @@ class FieldHypothesis:
             raise ValueError("width_bits must be a positive multiple of eight")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
-        if self.status == "confirmed":
+        if self.status.upper() == "CONFIRMED":
             raise ValueError("automatic field hypotheses cannot be confirmed")
 
     def as_dict(self) -> dict[str, Any]:

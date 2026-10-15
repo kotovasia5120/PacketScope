@@ -19,7 +19,7 @@
         <div class="form-row"><label for="format">Format<select id="format" name="format"><option value="auto">Auto-detect</option><option value="bin">BIN</option><option value="hex">HEX</option><option value="pcap">PCAP</option><option value="pcapng">PCAPNG</option></select></label><label class="check"><input id="raw-analysis" type="checkbox"> Analyze raw packet headers too</label><button id="analyze-button" type="submit">Analyze locally</button><button id="cancel-button" class="secondary" type="button" hidden>Cancel</button></div>
       </form>
       <div class="project-row"><label for="project-file">Restore saved project<input id="project-file" type="file" accept="application/json,.json"></label><button id="save-annotations" class="secondary" type="button">Save annotations locally</button></div>
-      <p id="status" class="status" role="status">Ready for a local file.</p>
+      <div class="progress-row"><progress id="analysis-progress" max="1" value="0" hidden></progress><span id="progress-label" class="muted">Idle</span></div><p id="status" class="status" role="status">Ready for a local file.</p>
     </section>
 
     <section id="results" hidden>
