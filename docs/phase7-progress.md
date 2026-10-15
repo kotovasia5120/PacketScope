@@ -131,3 +131,50 @@ git diff --check
 
 Competition readiness is **NOT COMPLETE** while Docker and hosted CI remain
 unresolved.
+
+## Post-Phase-7 continuation updates
+
+The current continuation work is recorded here so another session can resume
+without treating the earlier release-candidate snapshot as the final state.
+
+### Completed in this continuation
+
+- Added explicit `raw_packet`/`application_payload` coordinate metadata and
+  shared Python/browser schema application rules. Unsupported or unavailable
+  application payloads now produce unavailable fields, and incomplete ranges
+  never produce partial values.
+- Replaced browser schema integer coercion with BigInt-based decoding and
+  JSON-safe decimal strings for UINT32, UINT64, and INT64 values. Python and
+  Node boundary tests cover both endian orders and signed minimum values.
+- Added `local` and `public-demo` deployment modes. The public mode discloses
+  server-side upload processing in health/UI responses; request concurrency,
+  body deadlines, retained-job payload budgets, response limits, and malformed
+  capture errors remain bounded and quiet about packet contents. Package and
+  server metadata are now `0.2.0`.
+- Added `packetscope compare baseline changed`, a bounded controlled-change
+  report with message distributions, associated byte ranges, evidence,
+  contradictions, and follow-up experiments. Its hypotheses explicitly say
+  correlation is not causation.
+- Added cautious constant-step and unit-step-with-gaps counter hypotheses with
+  lower confidence and limitations instead of silently treating non-unit
+  progressions as confirmed counters.
+- Fixed browser field highlighting to transform coordinates when switching raw
+  and application views. The HEX viewer now renders a bounded window and the
+  offset control can move to offsets beyond the initial window; pane/HEX
+  resizing is available through the dependency-free UI.
+
+### Current continuation verification
+
+| Check | Result |
+| --- | --- |
+| `make test` | **PASS** — 99 tests on pinned Python 3.12.7 |
+| Node syntax and schema-value tests | **PASS** — `node --check` plus 2 Node tests |
+| Phase 6 evaluation | **PASS** — holdout precision 0.375 / recall 1.000 / F1 0.545 |
+| Phase 7 generalization evaluation | **PASS** — deterministic report generated; metrics remain heuristic |
+| Playwright E2E | **NOT RUN** — `node_modules`/Chromium are not installed in this checkout |
+| Docker build/offline container | **BLOCKED** — Docker daemon unavailable |
+| Hosted GitHub Actions | **UNVERIFIED** — no push or hosted run was authorized |
+
+Focused commits for this continuation are `afb74bb`, `04858d7`, `1737814`,
+`22bcfe1`, `b2fcac2`, and `cd1e4fd`. The untracked `.opencode/` directory is
+pre-existing workspace material and remains intentionally untouched.
