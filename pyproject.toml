@@ -1,6 +1,7 @@
 [build-system]
 requires = []
 build-backend = "packetscope.build_backend"
+backend-path = ["."]
 
 [project]
 name = "packetscope"

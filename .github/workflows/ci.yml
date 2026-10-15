@@ -1,0 +1,37 @@
+name: PacketScope CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+          cache: pip
+      - name: Verify pinned runtime and run tests
+        run: make test
+      - name: Build dependency-free wheel
+        run: python -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (tests execute during build)
+        run: docker build --tag packetscope:ci .
+      - name: Repeat tests in an offline container
+        run: docker run --rm --network none packetscope:ci python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: HTTP demonstration is separate from offline testing
+        run: |
+          docker run --rm --detach --name packetscope-http --publish 127.0.0.1:8765:8765 packetscope:ci
+          trap 'docker rm --force packetscope-http' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:8765/api/health; then exit 0; fi
+            sleep 1
+          done
+          exit 1
