@@ -65,11 +65,20 @@ See [`docs/architecture.md`](docs/architecture.md) and
 
 ## Verification record
 
-This file is updated with actual commands and results after each working
-stage. The initial environment used for development did not have Docker and
-reported Python 3.11.2, while the project requires Python 3.12.7; the local
-test run is therefore explicitly recorded in the final session summary and
-must be repeated in the pinned Docker image when Docker is available.
+The initial build environment reported Python 3.11.2 and did not have Docker,
+while the project pins Python 3.12.7. Verification on 2026-10-15 therefore
+records both the successful standard-library checks and the unavailable Docker
+check:
+
+| Command | Result |
+| --- | --- |
+| `make test` | **PASS** — 8 tests, including BIN/HEX/PCAP/PCAPNG, analysis, and HTTP upload limits |
+| `python3 -m compileall -q packetscope tests` | **PASS** |
+| `docker build -t packetscope:local .` | **NOT RUN** — Docker CLI is unavailable in the build environment |
+
+The Docker build must be run on a clean Linux host before submission to verify
+the pinned Python 3.12.7 image as well as the offline test step in the
+Dockerfile.
 
 ## License
 
