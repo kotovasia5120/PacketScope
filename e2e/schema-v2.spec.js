@@ -36,3 +36,54 @@ test("applies bounded Schema V2 values, nesting, arrays, and diagnostics", async
   await expect(page.locator("#fields-view")).toContainText("INVALID");
   await expect(page.locator("#fields-view")).toContainText("missing_reference");
 });
+
+test("edits structured constraints and validates an independent capture", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#packet-file").setInputFiles({
+    name: "constraint-editor.bin",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from([5]),
+  });
+  await page.getByRole("button", { name: "Analyze locally" }).click();
+  await expect(page.locator("#status")).toContainText("Analyzed 1 packet");
+  await page.getByRole("button", { name: "Fields" }).click();
+  await page.getByRole("button", { name: "Open schema editor" }).click();
+
+  await page.locator("#schema-editor-id").fill("value");
+  await page.locator("#schema-editor-name").fill("Value");
+  await page.locator("#schema-editor-type").selectOption("uint8");
+  await page.locator("#schema-editor-offset").fill("0");
+  await page.locator("#schema-editor-width").fill("1");
+  await page.locator("#schema-editor-minimum").fill("2");
+  await page.locator("#schema-editor-maximum").fill("10");
+  await page.locator("#schema-editor-enum").fill("[5, 6, 7]");
+  await page.locator("#schema-editor-enum-policy").selectOption("diagnostic");
+  await page.locator("#schema-editor-allowed").fill("[5, 6, 7]");
+  await page.locator("#schema-editor-forbidden").fill("[0]");
+  await page.locator("#schema-editor-mask").fill("7");
+  await page.locator("#schema-editor-reserved").fill("[3]");
+  await page.locator("#schema-editor-required-flags").fill("[1]");
+  await page.locator("#schema-editor-forbidden-flags").fill("[8]");
+  await page.locator("#schema-editor-constraints-json").fill('{"width_bits":8}');
+  await page.getByRole("button", { name: "Add field", exact: true }).click();
+  await expect(page.locator("#status")).toContainText("Schema field saved");
+  await page.getByRole("button", { name: "Apply reviewed schema" }).click();
+  await expect(page.locator("#status")).toContainText("Applied reviewed schema");
+  await expect(page.locator("#schema-editor-fields")).toContainText("constraint(s)");
+
+  const independent = [
+    '{"index":0,"timestamp":0,"direction":"rx","source":"fixture","raw":"BQ=="}',
+    '{"index":1,"timestamp":1,"direction":"rx","source":"fixture","raw":"AQ=="}',
+    '{"index":2,"timestamp":2,"direction":"rx","source":"fixture","raw":""}',
+  ].join("\n");
+  await page.locator("#schema-validation-file").setInputFiles({ name: "independent.jsonl", mimeType: "application/jsonl", buffer: Buffer.from(independent) });
+  await page.locator("#schema-validation-format").selectOption("jsonl");
+  await page.getByRole("button", { name: "Run validation" }).click();
+  await expect(page.locator("#schema-validation-status")).toContainText("Validation complete");
+  await expect(page.locator("#schema-validation-scope")).toContainText("Whole capture");
+  await expect(page.locator("#schema-validation-summary")).toContainText("1/3 packet");
+  await expect(page.locator("#independent-schema-validation-report")).toContainText("Packet 0");
+  await expect(page.locator("#independent-schema-validation-report")).toContainText("Packet 1");
+  await expect(page.locator("#independent-schema-validation-report")).toContainText("Packet 2");
+  await expect(page.locator("#independent-schema-validation-report")).toContainText(/minimum|truncated_field/i);
+});
