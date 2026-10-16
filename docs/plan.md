@@ -213,3 +213,35 @@ After every thematic change run `make test`, then run the applicable Node
 syntax/E2E and evaluation commands. Docker build/offline container tests and a
 hosted GitHub Actions run remain **UNVERIFIED** until an environment with those
 capabilities performs them; no local source-only result may promote either gate.
+
+## Phase 11–13 continuation checkpoint
+
+The first Schema V2 vertical slice is implemented and verified locally. The
+backend keeps V1 compatibility and adds bounded declarative dependencies,
+dynamic offsets/lengths, conditions, arrays, nested records, reusable
+definitions, explicit evaluation statuses, and checksum relationship
+descriptors. The browser imports/migrates V1, creates and renders V2 fields,
+and validates an independent uploaded capture through the existing schema API.
+Interop accepts representable V2 static fields and warns instead of flattening
+unsupported dynamic constructs. Normalized JSONL, explicit UART lines, and
+explicit CAN lines are available as a separate capture-format module; USB has
+only the documented normalized representation.
+
+Verified checkpoint:
+
+- `make test`: **PASS — 128 Python tests**.
+- `node --check packetscope/static/app.js`: **PASS**.
+- `node --check packetscope/static/schema-values.js`: **PASS**.
+- `node --check e2e/schema-v2.spec.js`: **PASS**.
+- `node --test tests/test_schema_values.js`: **PASS — 3 tests**.
+- `npm run e2e`: **PASS — 9 Chromium tests**.
+- `git diff --check`: **PASS**.
+
+Exact commits: `30c3c35` (Schema V2 engine), `8d80f90` (browser Schema V2
+workbench), `6281253` (normalized capture importer), and `bcbad73` (V2
+interoperability and resolved conditional-absence semantics).
+
+The next safe step is checksum/constraint validation plus the dedicated
+independent-capture schema review surface. Docker and hosted CI remain
+unverified because this environment has no authorized Docker daemon or hosted
+run.

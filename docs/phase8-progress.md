@@ -75,14 +75,60 @@ Kaitai and Wireshark export are now implemented for supported reviewed fixed
 ranges, with deterministic unit/HTTP/browser coverage. Additional formats and
 full dependency-aware interoperability remain open.
 
+## Phase 11 — Schema V2 engine
+
+**Status: PARTIAL; first bounded vertical slice is complete.**
+
+Implemented in commits `30c3c35` and `bcbad73`:
+
+- V1 schemas still load, validate, apply, and export through the existing
+  shape. `migrate_schema()` produces deterministic V2 stable field IDs without
+  inventing dynamic semantics.
+- V2 uses a declarative, non-executable expression model. Static values, field
+  references, addition/subtraction, bounded multiplication, masks, boolean
+  comparisons, min/max, and alignment are evaluated with deterministic graph
+  ordering and explicit `RESOLVED`, `UNKNOWN`, `UNAVAILABLE`, `INVALID`,
+  `CYCLIC`, `OUT_OF_BOUNDS`, and `LIMIT_EXCEEDED` states.
+- Length-prefixed payloads, dynamic offsets and lengths, conditional presence,
+  fixed/count arrays, nested fields, reusable definitions, provenance metadata,
+  checksum relationship descriptors, and packet/field/expression/array
+  budgets are represented. A false condition is a resolved absence; an
+  unresolved condition remains `UNKNOWN`.
+- `/api/schema/validate` accepts V2 and returns per-packet field diagnostics.
+  The browser applies V1 and V2 schemas, renders nested/array results and
+  diagnostics, exports V2, and has real Chromium coverage for the first slice.
+
+Remaining Phase 11 work includes richer nested-definition evaluation,
+constraint enforcement for V2 values, and executing supported checksum
+relationships using the existing CRC engine without duplicating it.
+
+## Phase 12 — Browser Schema V2 workbench
+
+**Status: PARTIAL.** The dependency-free editor now creates stable-ID V2
+fields, accepts bounded JSON expressions for dynamic offsets, lengths and
+conditions, configures fixed/count arrays and nested child fields, and shows
+field status, byte ranges, values, array identities, and diagnostics. Undo/redo
+continues to apply to human annotations. Full drag/drop ordering, reusable
+definition editing, checksum configuration, byte-selection field creation,
+and a dedicated independent-capture validation workspace remain open.
+
+## Phase 13 — Capture interoperability
+
+**Status: PARTIAL.** Kaitai and Wireshark exporters accept V2 static fields and
+emit deterministic output. Dynamic, conditional, nested, array, and checksum
+constructs are warned and omitted when the flat target format cannot preserve
+their meaning. `packetscope/capture_formats.py` adds bounded normalized JSONL,
+explicit UART lines, and explicit CAN lines while preserving timestamp,
+direction, source identity, raw bytes, and CAN identifiers. USB captures can
+use the normalized JSONL contract, but no dialect-specific USB parser exists.
+No framing boundary is inferred.
+
 ## Exact continuation instruction
 
-Next: extend the existing schema module with a bounded dependency graph and
-validation diagnostics, then add the interactive editor and real-browser
-coverage. Preserve the experiment and stream workspaces and run `make test`,
-JavaScript syntax checks, and `npm run e2e` after each thematic change. Do not
-mark Phase 9 complete until a user can construct, apply, and validate a schema
-in the real browser against independent captures.
+Next: add V2 checksum validation and constraint diagnostics, then complete the
+independent-capture browser validation view and reusable nested-definition
+editor. Preserve the experiment and stream workspaces and run `make test`,
+JavaScript syntax checks, and `npm run e2e` after each thematic change.
 
 ## Release blockers
 

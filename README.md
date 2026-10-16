@@ -5,7 +5,7 @@ unknown binary protocols. Load synthetic or real packet captures, compare bytes,
 inspect HEX/ASCII, and record evidence-backed hypotheses without sending data to
 cloud AI or external APIs.
 
-> **Status:** Phase 7 release-candidate slice. Automatic findings remain heuristic
+> **Status:** Phase 11–13 continuation slice. Automatic findings remain heuristic
 > hypotheses, not confirmed protocol facts.
 
 ## Demo
@@ -66,6 +66,17 @@ for private evidence.
 - Reviewed-schema export to bounded Kaitai Struct `.ksy` and Wireshark Lua
   dissector text with explicit warnings for unsupported coordinates, overlaps,
   and constructs; generated code is never executed by PacketScope.
+- Versioned Schema V2 migration and bounded declarative evaluation for stable
+  field IDs, dynamic offsets/lengths, conditions, fixed/count arrays, nested
+  fields, reusable definitions, explicit dependency diagnostics, and resource
+  budgets. V1 schemas remain loadable and applicable.
+- Browser Schema V2 editor/application for dynamic fields, conditions, arrays,
+  nested values, per-field statuses, and diagnostics. Dynamic or nested
+  constructs that current flat exporters cannot represent are warned and
+  omitted rather than flattened inaccurately.
+- Bounded normalized JSONL message import plus explicit UART and CAN line
+  representations. Timestamp, direction, source identity, raw bytes, and CAN
+  arbitration IDs are preserved; framing is never inferred.
 - Bounded baseline-versus-controlled-change comparison via the CLI, with
   packet distributions, associated byte ranges, evidence, contradictions, and
   follow-up experiment suggestions. Correlation is never presented as proof of
@@ -238,10 +249,10 @@ and unresolved gates are recorded in [`docs/phase7-progress.md`](docs/phase7-pro
 
 | Command or gate | Result |
 | --- | --- |
-| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 114 tests |
+| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 128 tests |
 | `python3 -m unittest discover -s tests -p 'test_*.py'` | **BLOCKED** — host Python 3.11.2 fails the pinned-runtime gate |
 | `node --check packetscope/static/app.js` plus E2E JS files | **PASS** |
-| `npm run e2e` with local Chromium server | **PASS** — 8 browser tests, including experiments, schema validation, and TCP reconstruction |
+| `npm run e2e` with local Chromium server | **PASS** — 9 browser tests, including Schema V2, experiments, schema validation, and TCP reconstruction |
 | HTTP `/api/health` smoke test | **PASS** — real local server |
 | `make test` with default host `python3` | **BLOCKED** — host is 3.11.2; use the explicit pinned-runtime command above |
 | Docker build/offline container | **BLOCKED** — Docker daemon is unavailable in this environment |
