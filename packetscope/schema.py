@@ -6,6 +6,7 @@ code and applying one only reads bounded bytes from already imported packets.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any, Iterable
 
 from packetscope.analysis.crc import STANDARD_CRC, checksum_value, compute_crc
@@ -585,6 +586,9 @@ def _v2_normalize_field(item: Any, *, index: int, parent_id: str | None = None, 
     _v2_constraint_container_limits(constraints, field_index=index)
     constraints = _v2_json_safe(constraints)
     field_path = field_id if parent_id and field_id.startswith(f"{parent_id}.") else f"{parent_id}.{field_id}" if parent_id else field_id
+    source_local_id = field_id
+    if parent_id and field_id.startswith(f"{parent_id}."):
+        source_local_id = field_id[len(parent_id) + 1:]
     return {
         "id": field_id, "name": name.strip(), "description": description,
         "type": type_name, "coordinate_system": coordinate_system,
@@ -593,7 +597,13 @@ def _v2_normalize_field(item: Any, *, index: int, parent_id: str | None = None, 
         "presence": presence, "fields": nested, "array": array,
         "definition": definition, "constraints": constraints,
         "path": field_path,
+        # Retained separately from ``id`` so a definition/template can be
+        # instantiated without leaking its declaration scope into instance
+        # IDs.  This is intentionally internal; public reports expose the
+        # resulting instance path and provenance instead.
+        "_source_local_id": source_local_id,
         "metadata": _v2_json_safe(item.get("metadata", {})),
+        "provenance": _v2_json_safe(item.get("provenance", {})),
         "algorithm": _v2_json_safe(item.get("algorithm")) if item.get("algorithm") is not None else None,
         "byte_order": _v2_json_safe(item.get("byte_order")) if item.get("byte_order") is not None else None,
         "checksum": _v2_json_safe(item.get("checksum")) if item.get("checksum") is not None else None,
@@ -612,6 +622,18 @@ def _v2_walk_fields(fields: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
             nested_element = array["element"].get("fields")
             if isinstance(nested_element, list):
                 yield from _v2_walk_fields(nested_element)
+
+
+def _v2_walk_declared_fields(fields: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+    """Walk field declarations including an array's element template."""
+    for field in fields:
+        yield field
+        nested = field.get("fields")
+        if isinstance(nested, list):
+            yield from _v2_walk_declared_fields(nested)
+        array = field.get("array")
+        if isinstance(array, dict) and isinstance(array.get("element"), dict):
+            yield from _v2_walk_declared_fields([array["element"]])
 
 
 def _v2_expression_refs(expr: Any, refs: set[str] | None = None) -> set[str]:
@@ -660,6 +682,26 @@ def _v2_field_expressions(field: dict[str, Any]) -> Iterable[Any]:
                 yield {"field": target}
 
 
+def _v2_direct_field_expressions(field: dict[str, Any]) -> Iterable[Any]:
+    """Yield only expressions owned by one field, not its descendants."""
+    yield field.get("offset")
+    yield field.get("length")
+    yield field.get("presence")
+    array = field.get("array")
+    if isinstance(array, dict):
+        yield array.get("count")
+    constraints = field.get("constraints")
+    if isinstance(constraints, dict):
+        relation = _v2_constraint_relation_descriptor(field, constraints)
+        if isinstance(relation, dict):
+            target = relation.get("target", relation.get("field", relation.get("field_id", relation.get("target_field", relation.get("target_field_id")))))
+            if isinstance(target, str):
+                yield {"field": target}
+    for descriptor in (field.get("checksum"), field.get("relationship")):
+        if isinstance(descriptor, dict):
+            yield descriptor
+
+
 def _v2_schema_graph(fields: list[dict[str, Any]], definitions: dict[str, dict[str, Any]]) -> tuple[dict[str, set[str]], list[dict[str, Any]]]:
     all_ids = {field["id"] for field in _v2_walk_fields(fields)}
     for definition in definitions.values():
@@ -669,14 +711,14 @@ def _v2_schema_graph(fields: list[dict[str, Any]], definitions: dict[str, dict[s
     every_field = list(_v2_walk_fields(fields)) + [field for definition in definitions.values() for field in _v2_walk_fields(definition.get("fields", []))]
     for field in every_field:
         refs: set[str] = set()
-        for expression in _v2_field_expressions(field):
+        for expression in _v2_direct_field_expressions(field):
             _v2_expression_refs(expression, refs)
         refs_by_id[field["id"]] = refs
         for ref in sorted(refs):
             if ref not in all_ids:
                 diagnostics.append({"status": "INVALID", "code": "missing_reference", "field_id": field["id"], "reference": ref, "message": f"field reference {ref!r} does not exist"})
         definition = field.get("definition")
-        if definition is not None and definition not in definitions:
+        if definition is not None and not field.get("_definition_expanded") and not field.get("_definition_cycle") and definition not in definitions:
             diagnostics.append({"status": "INVALID", "code": "missing_definition", "field_id": field["id"], "reference": definition, "message": f"definition {definition!r} does not exist"})
     state: dict[str, int] = {}
     stack: list[str] = []
@@ -704,6 +746,31 @@ def _v2_schema_graph(fields: list[dict[str, Any]], definitions: dict[str, dict[s
     return refs_by_id, sorted(diagnostics, key=lambda item: (item.get("field_id", ""), item.get("code", ""), item.get("reference", "")))
 
 
+def _v2_order_scope_fields(fields: list[dict[str, Any]], refs_by_id: dict[str, set[str]]) -> list[dict[str, Any]]:
+    """Topologically order one lexical scope while preserving stable ties."""
+    by_id = {field["id"]: field for field in fields}
+    position = {field["id"]: index for index, field in enumerate(fields)}
+    state: dict[str, int] = {}
+    ordered: list[dict[str, Any]] = []
+
+    def visit(field_id: str) -> None:
+        if state.get(field_id) == 1:
+            return
+        if state.get(field_id) == 2:
+            return
+        state[field_id] = 1
+        dependencies = [dependency for dependency in refs_by_id.get(field_id, ()) if dependency in by_id]
+        dependencies.sort(key=lambda dependency: position[dependency])
+        for dependency in dependencies:
+            visit(dependency)
+        state[field_id] = 2
+        ordered.append(by_id[field_id])
+
+    for field in fields:
+        visit(field["id"])
+    return ordered
+
+
 def _v2_fill_coordinates(fields: list[dict[str, Any]], coordinate_system: str) -> None:
     for field in fields:
         field["coordinate_system"] = field.get("coordinate_system") or coordinate_system
@@ -715,6 +782,248 @@ def _v2_fill_coordinates(fields: list[dict[str, Any]], coordinate_system: str) -
         array = field.get("array")
         if isinstance(array, dict) and isinstance(array.get("element"), dict):
             _v2_fill_coordinates([array["element"]], field["coordinate_system"])
+
+
+_V2_REFERENCE_KEYS = frozenset({
+    "field", "ref", "field_ref", "field_id", "target", "target_field",
+    "target_field_id", "length_field", "length_field_id", "source",
+    "source_field_id", "length_of", "covers",
+})
+
+
+def _v2_field_aliases(field: dict[str, Any]) -> tuple[str, ...]:
+    """Return local names accepted for a field in its lexical scope."""
+    raw = str(field.get("_source_local_id", field.get("id", "")))
+    aliases = [raw]
+    if "." in raw:
+        aliases.append(raw.rsplit(".", 1)[-1])
+    if "[]" in raw:
+        aliases.append(raw.rsplit("[]", 1)[-1].lstrip("."))
+    name = field.get("name")
+    if isinstance(name, str) and name.strip():
+        aliases.append(name.strip())
+    return tuple(dict.fromkeys(alias for alias in aliases if alias))
+
+
+def _v2_scope_reference(reference: str, local_refs: dict[str, str], visible_refs: dict[str, str]) -> str:
+    """Resolve a reference against local then parent scopes.
+
+    Explicit ``./`` and ``../`` prefixes are accepted for callers that need
+    to disambiguate a parent field from a same-named child.  Unqualified
+    references follow the usual lexical rule: nearest scope wins.
+    """
+    if reference.startswith("./"):
+        return local_refs.get(reference[2:], reference)
+    if reference.startswith("../"):
+        return visible_refs.get(reference[3:], reference)
+    return local_refs.get(reference, visible_refs.get(reference, reference))
+
+
+def _v2_rewrite_scoped_value(value: Any, local_refs: dict[str, str], visible_refs: dict[str, str]) -> Any:
+    """Rewrite declarative reference strings without evaluating schema data."""
+    if isinstance(value, list):
+        return [_v2_rewrite_scoped_value(item, local_refs, visible_refs) for item in value]
+    if not isinstance(value, dict):
+        return value
+    rewritten: dict[str, Any] = {}
+    kind = str(value.get("kind", "")).lower()
+    for key, candidate in value.items():
+        if key in _V2_REFERENCE_KEYS and isinstance(candidate, str):
+            if key in {"field", "ref", "field_ref"} or kind in {"field", "field_ref", "field_reference", "reference", "ref"} or key.endswith("field") or key.endswith("field_id"):
+                rewritten[key] = _v2_scope_reference(candidate, local_refs, visible_refs)
+                continue
+        if key in {"id", "name"} and isinstance(candidate, str) and kind in {"field", "field_ref", "field_reference", "reference", "ref"}:
+            rewritten[key] = _v2_scope_reference(candidate, local_refs, visible_refs)
+            continue
+        rewritten[key] = _v2_rewrite_scoped_value(candidate, local_refs, visible_refs)
+    return rewritten
+
+
+def _v2_direct_scope(fields: list[dict[str, Any]], prefix: str, root_ids: list[str] | None = None) -> tuple[dict[str, str], list[tuple[dict[str, Any], str, str]]]:
+    """Assign deterministic IDs to one field scope before rewriting refs."""
+    refs: dict[str, str] = {}
+    entries: list[tuple[dict[str, Any], str, str]] = []
+    for index, field in enumerate(fields):
+        local = str(field.get("_source_local_id", field.get("id", f"field_{index}")))
+        canonical = root_ids[index] if root_ids is not None else f"{prefix}.{local}" if prefix else local
+        entries.append((field, local, canonical))
+        for alias in _v2_field_aliases({**field, "_source_local_id": local}):
+            refs[alias] = canonical
+    return refs, entries
+
+
+def _v2_field_provenance(
+    field: dict[str, Any], canonical_id: str, definition_name: str | None,
+    definition_source: Any = None,
+) -> dict[str, Any]:
+    existing = field.get("provenance")
+    provenance = dict(existing) if isinstance(existing, dict) else {}
+    provenance.setdefault("source_id", field.get("id"))
+    provenance["instance_path"] = canonical_id
+    metadata = field.get("metadata")
+    if isinstance(metadata, dict) and metadata:
+        provenance.setdefault("metadata", deepcopy(metadata))
+    if definition_name is not None:
+        provenance["definition"] = definition_name
+        provenance.setdefault("definition_field_id", field.get("_source_local_id", field.get("id")))
+        if isinstance(definition_source, dict) and definition_source:
+            provenance.setdefault("definition_source", deepcopy(definition_source))
+    return provenance
+
+
+def _v2_expand_fields(
+    fields: list[dict[str, Any]],
+    definitions: dict[str, dict[str, Any]],
+    *,
+    prefix: str = "",
+    visible_refs: dict[str, str] | None = None,
+    root_ids: list[str] | None = None,
+    definition_stack: tuple[str, ...] = (),
+    source_definition: str | None = None,
+    source_definition_meta: Any = None,
+    depth: int = 0,
+    max_nesting: int = 16,
+) -> list[dict[str, Any]]:
+    """Expand reusable structures into an instance-scoped field tree.
+
+    Expansion is deterministic and bounded.  It copies only normalized schema
+    data, rewrites references to the nearest lexical scope, and retains the
+    declaration identity in ``provenance``.  Definition cycles/depth limits
+    are represented as markers consumed by the parser, rather than causing
+    unbounded recursion.
+    """
+    if not isinstance(fields, list):
+        return []
+    visible = dict(visible_refs or {})
+    local_refs, entries = _v2_direct_scope(fields, prefix, root_ids=root_ids)
+    scope_refs = {**visible, **local_refs}
+    expanded: list[dict[str, Any]] = []
+    for source, local_id, canonical_id in entries:
+        field = deepcopy(source)
+        field["id"] = canonical_id
+        field["path"] = canonical_id
+        field["_source_local_id"] = local_id
+        field["provenance"] = _v2_field_provenance(source, canonical_id, source_definition, source_definition_meta)
+        field["_array_visible_refs"] = dict(scope_refs)
+        for key in ("offset", "length", "presence", "constraints", "checksum", "relationship"):
+            if key in field:
+                field[key] = _v2_rewrite_scoped_value(field[key], local_refs, visible)
+        array = field.get("array")
+        if isinstance(array, dict):
+            array = deepcopy(array)
+            if "count" in array:
+                array["count"] = _v2_rewrite_scoped_value(array["count"], local_refs, visible)
+            # Array elements are expanded per item, once an index supplies the
+            # missing instance identity.  Keeping the normalized template here
+            # avoids sharing mutable output or values between repetitions.
+            field["array"] = array
+
+        definition_name = field.get("definition")
+        inline_fields = source.get("fields")
+        if isinstance(definition_name, str):
+            definition_item = definitions.get(definition_name)
+            if definition_item is None:
+                field["_definition_missing"] = True
+            elif definition_name in definition_stack:
+                field["_definition_cycle"] = True
+            elif depth >= max_nesting:
+                field["_definition_depth"] = True
+            else:
+                field["_definition_expanded"] = True
+                field["fields"] = _v2_expand_fields(
+                    definition_item.get("fields", []), definitions,
+                    prefix=canonical_id, visible_refs=scope_refs,
+                    definition_stack=(*definition_stack, definition_name),
+                    source_definition=definition_name, depth=depth + 1,
+                    source_definition_meta=definition_item.get("source", {}),
+                    max_nesting=max_nesting,
+                )
+        elif isinstance(inline_fields, list):
+            field["fields"] = _v2_expand_fields(
+                inline_fields, definitions, prefix=canonical_id,
+                visible_refs=scope_refs, definition_stack=definition_stack,
+                source_definition=source_definition, depth=depth + 1,
+                source_definition_meta=source_definition_meta,
+                max_nesting=max_nesting,
+            )
+        expanded.append(field)
+    return expanded
+
+
+def _v2_definition_graph(definitions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return deterministic recursive-definition diagnostics."""
+    edges: dict[str, set[str]] = {name: set() for name in definitions}
+    diagnostics: list[dict[str, Any]] = []
+    for name, definition in definitions.items():
+        for field in _v2_walk_declared_fields(definition.get("fields", [])):
+            target = field.get("definition")
+            if isinstance(target, str):
+                if target not in definitions:
+                    diagnostics.append({
+                        "status": "INVALID", "code": "missing_definition",
+                        "field_id": f"{name}.{field.get('id', '')}",
+                        "reference": target,
+                        "message": f"definition {target!r} does not exist",
+                    })
+                    continue
+                edges[name].add(target)
+    state: dict[str, int] = {}
+    stack: list[str] = []
+    cyclic: set[str] = set()
+
+    def visit(name: str) -> None:
+        if state.get(name) == 1:
+            if name in stack:
+                cyclic.update(stack[stack.index(name):])
+            return
+        if state.get(name) == 2:
+            return
+        state[name] = 1
+        stack.append(name)
+        for target in sorted(edges.get(name, ())):
+            visit(target)
+        stack.pop()
+        state[name] = 2
+
+    for name in sorted(edges):
+        visit(name)
+    diagnostics.extend([
+        {"status": "CYCLIC", "code": "definition_cycle", "definition": name,
+         "message": f"definition cycle prevents expansion of {name!r}"}
+        for name in sorted(cyclic)
+    ])
+    return sorted(diagnostics, key=lambda item: (
+        str(item.get("field_id", "")), str(item.get("code", "")),
+        str(item.get("reference", item.get("definition", ""))),
+    ))
+
+
+def _v2_validate_scoped_ids(fields: list[dict[str, Any]], scope: str) -> None:
+    """Reject duplicate IDs only within the scope that owns them."""
+    seen: set[str] = set()
+    for field in fields:
+        field_id = str(field.get("id", ""))
+        if field_id in seen:
+            raise ValueError(f"schema field ids must be unique within {scope}: {field_id}")
+        seen.add(field_id)
+        nested = field.get("fields")
+        if isinstance(nested, list):
+            _v2_validate_scoped_ids(nested, f"{scope}.{field_id}")
+        array = field.get("array")
+        if isinstance(array, dict) and isinstance(array.get("element"), dict):
+            _v2_validate_scoped_ids([array["element"]], f"{scope}.{field_id}[]")
+
+
+def _v2_expansion_diagnostics(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for field in _v2_walk_declared_fields(fields):
+        if field.get("_definition_depth"):
+            diagnostics.append({
+                "status": "LIMIT_EXCEEDED", "code": "definition_depth",
+                "field_id": field["id"], "definition": field.get("definition"),
+                "message": "definition expansion exceeds the schema nesting budget",
+            })
+    return diagnostics
 
 
 def _validate_schema_v2(schema: dict[str, Any]) -> dict[str, Any]:
@@ -747,16 +1056,17 @@ def _validate_schema_v2(schema: dict[str, Any]) -> dict[str, Any]:
         definitions[definition_name] = {
             "name": str(raw_definition.get("name", definition_name))[:120],
             "description": str(raw_definition.get("description", ""))[:_V2_MAX_DESCRIPTION],
+            "source": _v2_json_safe(raw_definition.get("source", raw_definition.get("provenance", {}))),
+            "metadata": _v2_json_safe(raw_definition.get("metadata", {})),
             "fields": [_v2_normalize_field(item, index=index, parent_id=definition_name, require_id=False) for index, item in enumerate(raw_definition_fields)],
         }
         _v2_fill_coordinates(definitions[definition_name]["fields"], coordinate_system)
     all_fields = list(_v2_walk_fields(fields)) + [field for definition in definitions.values() for field in _v2_walk_fields(definition["fields"])]
     if len(all_fields) > budgets["max_fields"]:
         raise ValueError("schema fields are missing or exceed the limit")
-    field_ids = [field["id"] for field in all_fields]
-    duplicates = sorted({field_id for field_id in field_ids if field_ids.count(field_id) > 1})
-    if duplicates:
-        raise ValueError(f"schema field ids must be unique: {duplicates[0]}")
+    _v2_validate_scoped_ids(fields, "fields")
+    for definition_name, definition in definitions.items():
+        _v2_validate_scoped_ids(definition.get("fields", []), f"definition {definition_name}")
     relationship_key = next((key for key in ("relationships", "checksums", "checksum_relationships", "length_relationships") if key in schema), None)
     relationships_raw = schema.get(relationship_key, []) if relationship_key is not None else []
     if not isinstance(relationships_raw, list) or len(relationships_raw) > budgets["max_fields"]:
@@ -769,7 +1079,19 @@ def _validate_schema_v2(schema: dict[str, Any]) -> dict[str, Any]:
         item.setdefault("id", f"relationship_{index}")
         item.setdefault("kind", "length" if relationship_key == "length_relationships" else "checksum")
         relationships.append(item)
-    refs_by_id, diagnostics = _v2_schema_graph(fields, definitions)
+    # Expand one deterministic instance of each root field for validation.
+    # This validates references in the same scopes used during application,
+    # while definition-only templates remain bounded and reusable.
+    expanded_fields = _v2_expand_fields(
+        fields, definitions, max_nesting=budgets["max_nesting"]
+    )
+    refs_by_id, diagnostics = _v2_schema_graph(expanded_fields, {})
+    diagnostics.extend(_v2_expansion_diagnostics(expanded_fields))
+    diagnostics.extend(_v2_definition_graph(definitions))
+    diagnostics.sort(key=lambda item: (
+        str(item.get("field_id", "")), str(item.get("code", "")),
+        str(item.get("reference", item.get("definition", ""))),
+    ))
     normalized = {
         "schema_version": SCHEMA_V2_VERSION,
         "name": str(schema.get("name", "PacketScope protocol"))[:120] or "PacketScope protocol",
@@ -1397,6 +1719,13 @@ def _v2_public_field(field: dict[str, Any], result: dict[str, Any], *, value: An
         "value_encoding": "decimal" if integer_type and (isinstance(value, (int, str)) and not isinstance(value, bool)) else "boolean" if isinstance(value, bool) else "text" if isinstance(value, str) and field["type"] in {"text", "string", "utf8", "ascii"} else "hex" if isinstance(value, str) else None,
         "diagnostics": diagnostics,
     }
+    if isinstance(field.get("provenance"), dict):
+        output["provenance"] = deepcopy(field["provenance"])
+        # ``source`` is the compact compatibility spelling used by schema
+        # consumers that predate the more descriptive ``provenance`` key.
+        output["source"] = deepcopy(field["provenance"])
+    if field.get("definition") is not None:
+        output["definition"] = field.get("definition")
     if items is not None: output["items"] = items
     if field.get("checksum") is not None or field.get("relationship") is not None:
         output["relationship"] = field.get("checksum", field.get("relationship"))
@@ -1430,6 +1759,44 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
     if data is not None and len(data) > budgets["max_bytes_per_packet"]:
         result = _v2_status_result("LIMIT_EXCEEDED", diagnostics=[_v2_diag("LIMIT_EXCEEDED", "packet_bytes", "packet coordinate bytes exceed the schema budget")])
         return _v2_public_field(field, result, present=False), result
+    missing_references = checked.get("_runtime_missing_references", {}).get(field.get("id"), ())
+    if missing_references:
+        result = _v2_status_result(
+            "INVALID", diagnostics=[_v2_diag(
+                "INVALID", "missing_reference", f"field reference {reference!r} does not exist",
+                reference=reference,
+            ) for reference in sorted(missing_references)]
+        )
+        output = _v2_public_field(field, result)
+        if store:
+            values[field["id"]] = result
+        return output, result
+    if field.get("id") in checked.get("_runtime_cyclic_fields", set()):
+        result = _v2_status_result("CYCLIC", diagnostics=[_v2_diag("CYCLIC", "dependency_cycle", "field dependency cycle prevents evaluation")])
+        output = _v2_public_field(field, result, present=False)
+        if store:
+            values[field["id"]] = result
+        return output, result
+    if field.get("_definition_missing"):
+        definition = field.get("definition")
+        result = _v2_status_result("INVALID", diagnostics=[_v2_diag("INVALID", "missing_definition", f"definition {definition!r} does not exist", reference=definition)])
+        output = _v2_public_field(field, result, present=False)
+        if store:
+            values[field["id"]] = result
+        return output, result
+    if field.get("_definition_cycle"):
+        definition = field.get("definition")
+        result = _v2_status_result("CYCLIC", diagnostics=[_v2_diag("CYCLIC", "definition_cycle", f"definition cycle prevents expansion of {definition!r}", definition=definition)])
+        output = _v2_public_field(field, result, present=False)
+        if store:
+            values[field["id"]] = result
+        return output, result
+    if field.get("_definition_depth"):
+        result = _v2_status_result("LIMIT_EXCEEDED", diagnostics=[_v2_diag("LIMIT_EXCEEDED", "nesting", "definition expansion exceeds the schema nesting budget")])
+        output = _v2_public_field(field, result, present=False)
+        if store:
+            values[field["id"]] = result
+        return output, result
     presence = _v2_eval_expr(field.get("presence", True), values, budgets)
     if presence["status"] != "RESOLVED":
         result = _v2_status_result(presence["status"], diagnostics=presence.get("diagnostics", []))
@@ -1473,7 +1840,7 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
     array = field.get("array")
     nested_fields = field.get("fields")
     definition = field.get("definition")
-    if definition is not None:
+    if definition is not None and not field.get("_definition_expanded"):
         definition_item = checked["definitions"].get(definition)
         if definition_item is None:
             result = _v2_status_result("INVALID", offset=absolute_offset, diagnostics=[_v2_diag("INVALID", "missing_definition", f"definition {definition!r} does not exist")])
@@ -1515,12 +1882,27 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
                 if store: values[field["id"]] = result
                 return output, result
         nested_values: dict[str, dict[str, Any]] = {}
-        nested_outputs: list[dict[str, Any]] = []
+        nested_outputs_by_id: dict[str, dict[str, Any]] = {}
         nested_end = absolute_offset
         nested_status = "RESOLVED"
-        for child in nested_fields:
+        nested_graph, nested_graph_diagnostics = _v2_schema_graph(nested_fields, {})
+        runtime_cyclic = checked.setdefault("_runtime_cyclic_fields", set())
+        runtime_missing = checked.setdefault("_runtime_missing_references", {})
+        effective_nested_diagnostics: list[dict[str, Any]] = []
+        for nested_diagnostic in nested_graph_diagnostics:
+            nested_field_id = nested_diagnostic.get("field_id")
+            if nested_diagnostic.get("code") == "dependency_cycle" and isinstance(nested_field_id, str):
+                runtime_cyclic.add(nested_field_id)
+                effective_nested_diagnostics.append(nested_diagnostic)
+            elif nested_diagnostic.get("code") == "missing_reference" and isinstance(nested_field_id, str):
+                reference = nested_diagnostic.get("reference")
+                if reference not in values and reference not in checked.get("_runtime_field_ids", set()):
+                    runtime_missing.setdefault(nested_field_id, set()).add(reference)
+                    effective_nested_diagnostics.append(nested_diagnostic)
+        nested_order = _v2_order_scope_fields(nested_fields, nested_graph)
+        for child in nested_order:
             child_output, child_result = _v2_parse_field(child, base_offset=absolute_offset, data=data, metadata=metadata, values={**values, **nested_values}, checked=checked, depth=depth + 1)
-            nested_outputs.append(child_output)
+            nested_outputs_by_id[child["id"]] = child_output
             nested_values[child["id"]] = child_result
             if child_result.get("status") != "RESOLVED":
                 nested_status = _v2_merge_status(nested_status, child_result.get("status", "INVALID"))
@@ -1530,8 +1912,14 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
         length = explicit_length if explicit_length is not None else max(0, nested_end - absolute_offset)
         if length > budgets["max_field_length"]: nested_status = _v2_merge_status(nested_status, "LIMIT_EXCEEDED")
         if absolute_offset + length > len(data): nested_status = _v2_merge_status(nested_status, "OUT_OF_BOUNDS")
+        nested_outputs = [nested_outputs_by_id[child["id"]] for child in nested_fields]
+        if effective_nested_diagnostics:
+            for diagnostic in effective_nested_diagnostics:
+                if diagnostic not in checked.setdefault("_runtime_diagnostics", []):
+                    checked["_runtime_diagnostics"].append(diagnostic)
+        values.update(nested_values)
         diagnostics = [] if nested_status == "RESOLVED" else [_v2_diag(nested_status, "nested_status", "nested structure contains a non-resolved field")]
-        result = _v2_status_result(nested_status, value={child["id"]: child_output.get("value") for child, child_output in zip(nested_fields, nested_outputs)}, internal={child["id"]: nested_values[child["id"]].get("internal") for child in nested_fields}, diagnostics=diagnostics, offset=absolute_offset, length=length)
+        result = _v2_status_result(nested_status, value={child["id"]: nested_outputs_by_id[child["id"]].get("value") for child in nested_fields}, internal={child["id"]: nested_values[child["id"]].get("internal") for child in nested_fields}, diagnostics=diagnostics, offset=absolute_offset, length=length)
         output = _v2_public_field(field, result, value=result.get("value"))
         output["fields"] = nested_outputs
         if store: values[field["id"]] = result
@@ -1629,7 +2017,14 @@ def _v2_parse_array(field: dict[str, Any], array: dict[str, Any], absolute_offse
     public_values: list[Any] = []
     cursor, status = absolute_offset, "RESOLVED"
     for index in range(count):
-        item_output, item_result = _v2_parse_field(element, base_offset=cursor, data=data, metadata=metadata, values=values, checked=checked, depth=depth + 1, store=False)
+        item_id = f"{field['id']}[{index}]"
+        item_fields = _v2_expand_fields(
+            [element], checked.get("definitions", {}), prefix=item_id,
+            root_ids=[item_id], visible_refs={**field.get("_array_visible_refs", {}), **{key: key for key in values}},
+            depth=depth + 1, max_nesting=budgets["max_nesting"],
+        )
+        item_field = item_fields[0] if item_fields else element
+        item_output, item_result = _v2_parse_field(item_field, base_offset=cursor, data=data, metadata=metadata, values=values, checked=checked, depth=depth + 1, store=False)
         item_output["index"] = index
         items.append(item_output)
         public_values.append(item_output.get("value"))
@@ -2209,29 +2604,63 @@ def _v2_apply_checksum_relationship(
 
 def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
     checked["_runtime"] = {"array_items": 0, "output_fields": 0}
+    checked["_runtime_diagnostics"] = []
     values: dict[str, dict[str, Any]] = {}
     records: dict[str, dict[str, Any]] = {}
     field_outputs: dict[str, dict[str, Any]] = {}
-    field_map = {field["id"]: field for field in checked["fields"]}
-    refs_by_id, graph_diagnostics = _v2_schema_graph(checked["fields"], checked["definitions"])
+    runtime_fields = _v2_expand_fields(
+        checked["fields"], checked["definitions"],
+        max_nesting=checked["budgets"]["max_nesting"],
+    )
+    field_map = {field["id"]: field for field in _v2_walk_fields(runtime_fields)}
+    checked["_runtime_field_ids"] = set(field_map)
+    refs_by_id, graph_diagnostics = _v2_schema_graph(runtime_fields, {})
     cyclic = {item["field_id"] for item in graph_diagnostics if item.get("code") == "dependency_cycle"}
     missing = {(item.get("field_id"), item.get("reference")) for item in graph_diagnostics if item.get("code") == "missing_reference"}
-    state: dict[str, int] = {}
-    order: list[str] = []
+    checked["_runtime_cyclic_fields"] = cyclic
+    checked["_runtime_missing_references"] = {}
+    for field_id, reference in missing:
+        checked["_runtime_missing_references"].setdefault(field_id, set()).add(reference)
 
-    def visit(field_id: str) -> None:
-        if state.get(field_id) in {1, 2}:
-            return
-        state[field_id] = 1
-        for dependency in sorted(refs_by_id.get(field_id, set())):
-            if dependency in field_map:
-                visit(dependency)
-        state[field_id] = 2
-        order.append(field_id)
-
-    for field in checked["fields"]:
-        visit(field["id"])
-    for field_id in order:
+    root_by_id: dict[str, str] = {}
+    for root in runtime_fields:
+        root_by_id[root["id"]] = root["id"]
+        for nested in _v2_walk_fields(root.get("fields", []) or []):
+            root_by_id[nested["id"]] = root["id"]
+    root_dependencies: dict[str, set[str]] = {field["id"]: set() for field in runtime_fields}
+    for field_id, dependencies in refs_by_id.items():
+        owner = root_by_id.get(field_id)
+        if owner is None:
+            continue
+        for dependency in dependencies:
+            dependency_owner = root_by_id.get(dependency)
+            if dependency_owner is not None and dependency_owner != owner:
+                root_dependencies[owner].add(dependency_owner)
+    # Array element declarations are instantiated later, so they are not in
+    # the ordinary runtime field graph yet.  Their references can still make
+    # the containing root field depend on a later sibling.
+    root_reference_map: dict[str, str] = {}
+    for root in runtime_fields:
+        root_reference_map[root["id"]] = root["id"]
+        if isinstance(root.get("name"), str):
+            root_reference_map[root["name"]] = root["id"]
+        for nested in _v2_walk_fields(root.get("fields", []) or []):
+            root_reference_map[nested["id"]] = root["id"]
+    for root in runtime_fields:
+        for declared in _v2_walk_declared_fields([root]):
+            if declared is root:
+                continue
+            owner = root["id"]
+            references: set[str] = set()
+            for expression in _v2_direct_field_expressions(declared):
+                _v2_expression_refs(expression, references)
+            for reference in references:
+                dependency_owner = root_reference_map.get(reference)
+                if dependency_owner is not None and dependency_owner != owner:
+                    root_dependencies[owner].add(dependency_owner)
+    root_order = _v2_order_scope_fields(runtime_fields, root_dependencies)
+    for field in root_order:
+        field_id = field["id"]
         field = field_map[field_id]
         if field_id in cyclic:
             result = _v2_status_result("CYCLIC", diagnostics=[_v2_diag("CYCLIC", "dependency_cycle", "field dependency cycle prevents evaluation")])
@@ -2247,12 +2676,14 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
         values[field_id] = result
         records[field_id] = result
         field_outputs[field_id] = output
-    fields = [field_outputs[field["id"]] for field in checked["fields"]]
+    fields = [field_outputs[field["id"]] for field in runtime_fields]
     diagnostics = list(checked.get("diagnostics", []))
     diagnostics.extend(item for item in graph_diagnostics if item not in diagnostics)
+    diagnostics.extend(item for item in checked.get("_runtime_diagnostics", []) if item not in diagnostics)
     coordinate_cache: dict[str, tuple[bytes | None, dict[str, Any]]] = {}
     relationship_results: list[dict[str, Any]] = []
-    for relationship_id, owner_id, descriptor in _v2_relationship_descriptors(checked):
+    relationship_checked = {**checked, "fields": runtime_fields}
+    for relationship_id, owner_id, descriptor in _v2_relationship_descriptors(relationship_checked):
         relationship_kind = str(descriptor.get("kind", "checksum")).lower()
         if relationship_kind in {"length", "length_relationship", "size"}:
             if owner_id is not None and not any(key in descriptor for key in ("field_id", "length_field_id", "length_field", "source_field_id", "source", "field")):

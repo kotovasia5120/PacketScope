@@ -70,6 +70,115 @@ class SchemaV2Tests(unittest.TestCase):
         cycle_result = apply_schema(cycle, [Packet(0, b"xx")])
         self.assertEqual({field["status"] for field in cycle_result["values"][0]["fields"]}, {"CYCLIC"})
 
+    def test_reusable_definition_instances_have_scoped_ids_and_provenance(self):
+        schema = validate_schema({
+            "schema_version": 2,
+            "definitions": {
+                "pair": {"fields": [
+                    {"id": "size", "type": "uint8", "offset": 0, "length": 1},
+                    {"id": "value", "type": "uint8", "offset": {"field": "size"}, "length": 1},
+                ]},
+            },
+            "fields": [
+                {"id": "first", "definition": "pair", "offset": 0},
+                {"id": "second", "definition": "pair", "offset": 3},
+            ],
+        })
+        packet = apply_schema(schema, [Packet(0, b"\x01x\x00\x01y")])["values"][0]["fields"]
+        self.assertEqual([field["id"] for field in packet], ["first", "second"])
+        self.assertEqual([child["id"] for child in packet[0]["fields"]], ["first.size", "first.value"])
+        self.assertEqual([child["id"] for child in packet[1]["fields"]], ["second.size", "second.value"])
+        self.assertEqual([child["value"] for child in packet[0]["fields"]], [1, ord("x")])
+        self.assertEqual([child["value"] for child in packet[1]["fields"]], [1, ord("y")])
+        self.assertEqual(packet[0]["fields"][0]["provenance"]["definition"], "pair")
+        self.assertEqual(packet[1]["fields"][0]["path"], "second.size")
+
+    def test_nested_definition_expands_deterministically(self):
+        schema = validate_schema({
+            "schema_version": 2,
+            "definitions": {
+                "inner": {"fields": [{"id": "value", "type": "uint8", "offset": 0, "length": 1}]},
+                "outer": {"fields": [
+                    {"id": "tag", "type": "uint8", "offset": 0, "length": 1},
+                    {"id": "body", "definition": "inner", "offset": 1},
+                ]},
+            },
+            "fields": [{"id": "record", "definition": "outer", "offset": 0}],
+        })
+        first = apply_schema(schema, [Packet(0, b"\x03\x09")])["values"][0]["fields"][0]
+        second = apply_schema(schema, [Packet(0, b"\x03\x09")])["values"][0]["fields"][0]
+        self.assertEqual(first, second)
+        self.assertEqual([child["id"] for child in first["fields"]], ["record.tag", "record.body"])
+        self.assertEqual(first["fields"][1]["fields"][0]["id"], "record.body.value")
+        self.assertEqual(first["fields"][1]["fields"][0]["provenance"]["definition"], "inner")
+
+    def test_later_sibling_dependency_is_resolved_in_source_scope(self):
+        schema = validate_schema({
+            "schema_version": 2,
+            "fields": [
+                {"id": "payload", "type": "uint8", "offset": {"field": "length", "add": 1}, "length": 1},
+                {"id": "length", "type": "uint8", "offset": 0, "length": 1},
+            ],
+        })
+        fields = apply_schema(schema, [Packet(0, b"\x01\x00\x7f")])["values"][0]["fields"]
+        self.assertEqual(fields[0]["status"], "RESOLVED")
+        self.assertEqual(fields[0]["value"], 0x7F)
+
+    def test_definition_missing_and_recursive_references_are_explicit(self):
+        missing = validate_schema({
+            "schema_version": 2,
+            "definitions": {"record": {"fields": [{"id": "value", "type": "uint8", "offset": {"field": "absent"}, "length": 1}]}},
+            "fields": [{"id": "item", "definition": "record", "offset": 0}],
+        })
+        self.assertIn("missing_reference", {item["code"] for item in missing["diagnostics"]})
+        missing_field = apply_schema(missing, [Packet(0, b"x")])["values"][0]["fields"][0]["fields"][0]
+        self.assertEqual(missing_field["status"], "INVALID")
+        self.assertEqual(missing_field["diagnostics"][0]["code"], "missing_reference")
+
+        cyclic = validate_schema({
+            "schema_version": 2,
+            "definitions": {
+                "a": {"fields": [{"id": "next", "definition": "b", "offset": 0}]},
+                "b": {"fields": [{"id": "next", "definition": "a", "offset": 0}]},
+            },
+            "fields": [{"id": "item", "definition": "a", "offset": 0}],
+        })
+        self.assertEqual({item["code"] for item in cyclic["diagnostics"]}, {"definition_cycle"})
+        result = apply_schema(cyclic, [Packet(0, b"x")])["values"][0]["fields"][0]
+        self.assertEqual(result["status"], "CYCLIC")
+
+    def test_duplicate_ids_are_rejected_per_scope_and_definition_count_is_bounded(self):
+        with self.assertRaises(ValueError):
+            validate_schema({"schema_version": 2, "fields": [
+                {"id": "same", "type": "uint8", "offset": 0, "length": 1},
+                {"id": "same", "type": "uint8", "offset": 1, "length": 1},
+            ]})
+        # Local template IDs may be reused by independent definitions; the
+        # instance expansion gives them distinct paths.
+        reusable = validate_schema({"schema_version": 2, "definitions": {
+            "a": {"fields": [{"id": "value", "type": "uint8", "offset": 0, "length": 1}]},
+            "b": {"fields": [{"id": "value", "type": "uint8", "offset": 0, "length": 1}]},
+        }, "fields": [{"id": "a", "definition": "a", "offset": 0}, {"id": "b", "definition": "b", "offset": 1}]})
+        self.assertEqual([field["id"] for field in apply_schema(reusable, [Packet(0, b"xy")])["values"][0]["fields"]], ["a", "b"])
+        with self.assertRaises(ValueError):
+            validate_schema({"schema_version": 2, "definitions": {str(index): {"fields": []} for index in range(129)}, "fields": []})
+
+    def test_definition_depth_and_output_bounds_are_enforced(self):
+        schema = validate_schema({
+            "schema_version": 2,
+            "budgets": {"max_nesting": 1, "max_output_fields": 2},
+            "definitions": {
+                "outer": {"fields": [{"id": "inner", "definition": "inner", "offset": 0}]},
+                "inner": {"fields": [{"id": "value", "type": "uint8", "offset": 0, "length": 1}]},
+            },
+            "fields": [{"id": "record", "definition": "outer", "offset": 0}],
+        })
+        self.assertIn("definition_depth", {item["code"] for item in schema["diagnostics"]})
+        field = apply_schema(schema, [Packet(0, b"x")])["values"][0]["fields"][0]
+        self.assertIn(field["status"], {"LIMIT_EXCEEDED", "RESOLVED"})
+        nested = field["fields"][0]
+        self.assertEqual(nested["status"], "LIMIT_EXCEEDED")
+
     def test_limits_and_truncation_are_distinct(self):
         limited = validate_schema({
             "schema_version": 2,
