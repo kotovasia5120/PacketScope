@@ -3,7 +3,7 @@
 ## Data flow
 
 ```text
-BIN / HEX / PCAP / PCAPNG / NORMALIZED JSONL
+BIN / HEX / PCAP / PCAPNG / NORMALIZED JSONL / UART / CAN
           |
           v
    bounded import layer
@@ -30,7 +30,9 @@ BIN / HEX / PCAP / PCAPNG / NORMALIZED JSONL
 ## Boundaries
 
 - `packetscope/importers/` validates file formats and produces packets. It does
-  not decide what a field means.
+  not decide what a field means. `capture_importer.py` adapts the bounded
+  message-oriented parsers below into this same `ImportResult`/`Packet` path;
+  CLI, HTTP, and analysis jobs therefore share one dispatch boundary.
 - `packetscope/capture_formats.py` is a separate bounded message-oriented
   importer for captures that already provide message boundaries. Its
   normalized JSON-lines contract has one object per message and preserves a

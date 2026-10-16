@@ -6,6 +6,7 @@ from packetscope.errors import FormatError, InputLimitError
 from packetscope.models import ImportResult, Limits
 
 from .bin_importer import parse_bin
+from .capture_importer import import_message_capture
 from .hex_importer import parse_hex
 from .pcap_importer import parse_pcap
 from .pcapng_importer import parse_pcapng
@@ -22,6 +23,12 @@ def detect_format(name: str, data: bytes) -> str:
         return "pcap"
     if suffix in {".pcapng", ".ng"} or data[:4] == b"\x0a\x0d\x0d\x0a":
         return "pcapng"
+    if suffix in {".jsonl", ".ndjson"}:
+        return "jsonl"
+    if suffix in {".uart", ".uartlog"}:
+        return "uart"
+    if suffix in {".can", ".candump"}:
+        return "can"
     if suffix in {".hex", ".txt"}:
         return "hex"
     return "bin"
@@ -34,20 +41,27 @@ def import_bytes(
     limits: Limits | None = None,
 ) -> ImportResult:
     limits = limits or Limits()
+    if not isinstance(format_name, str):
+        raise FormatError("capture format must be a string")
     if len(data) > limits.max_input_bytes:
         raise InputLimitError(
             f"input is {len(data)} bytes; limit is {limits.max_input_bytes}"
         )
-    selected = detect_format(name, data) if format_name == "auto" else format_name
+    requested = format_name.strip().lower()
+    selected = detect_format(name, data) if requested == "auto" else requested
     parsers = {
         "bin": parse_bin,
         "hex": parse_hex,
         "pcap": parse_pcap,
         "pcapng": parse_pcapng,
     }
-    if selected not in parsers:
-        raise FormatError(f"unsupported format: {selected}")
-    result = parsers[selected](data, name, limits)
+    if selected in parsers:
+        result = parsers[selected](data, name, limits)
+    else:
+        try:
+            result = import_message_capture(name, data, selected, limits)
+        except ValueError as exc:
+            raise FormatError(str(exc)) from exc
     if len(result.packets) > limits.max_packets:
         raise InputLimitError(f"packet count exceeds limit {limits.max_packets}")
     return result

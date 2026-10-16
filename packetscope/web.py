@@ -804,7 +804,10 @@ def _multipart_schema_validation(content_type: str, body: bytes) -> tuple[str, s
             file_part = part
         elif field_name == "format":
             format_name = (part.get_content() or "auto").strip().lower()
-            if format_name not in {"auto", "bin", "hex", "pcap", "pcapng"}:
+            if format_name not in {
+                "auto", "bin", "hex", "pcap", "pcapng", "jsonl",
+                "uart", "uart-lines", "can", "can-lines",
+            }:
                 raise ValueError("schema validation format is invalid")
         elif field_name == "schema":
             schema_value = part.get_content()
@@ -838,7 +841,10 @@ def _multipart_experiment(content_type: str, body: bytes) -> dict:
         "raw": False,
         "change_label": "controlled change",
     }
-    formats = {"auto", "bin", "hex", "pcap", "pcapng"}
+    formats = {
+        "auto", "bin", "hex", "pcap", "pcapng", "jsonl",
+        "uart", "uart-lines", "can", "can-lines",
+    }
     field_count = 0
     for part in message.iter_parts():
         field_count += 1

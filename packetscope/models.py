@@ -57,6 +57,14 @@ class Packet:
     link_type: int | None = None
     interface_id: int | None = None
     source_name: str | None = None
+    # Message-oriented capture formats retain transport provenance in addition
+    # to the filename/source name used by the older packet importers. These
+    # fields are optional so BIN/HEX/PCAP/PCAPNG records keep their existing
+    # shape and semantics.
+    direction: str | None = None
+    source_identity: str | None = None
+    boundary: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

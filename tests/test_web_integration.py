@@ -273,6 +273,23 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(result["source"]["format"], "bin")
         self.assertEqual(result["packets"][0]["payload"], "aa010203")
 
+    def test_message_capture_upload_uses_common_analysis_pipeline(self):
+        payload = (
+            b'{"timestamp":4.5,"direction":"rx","source":"uart0",'
+            b'"raw":"AQI="}\n'
+            b'{"timestamp":5,"direction":"tx","source":"uart0",'
+            b'"raw":"/w=="}\n'
+        )
+        body, content_type = multipart(payload, filename="capture.jsonl")
+        with self.request("/api/analyze", "POST", body, content_type) as response:
+            result = json.load(response)
+        self.assertEqual(result["source"]["format"], "jsonl")
+        self.assertEqual(result["source"]["packet_count"], 2)
+        self.assertEqual([packet["direction"] for packet in result["packets"]], ["rx", "tx"])
+        self.assertEqual(result["packets"][0]["source_identity"], "uart0")
+        self.assertEqual(result["packets"][0]["source"], "uart0")
+        self.assertEqual(result["packets"][0]["timestamp"], 4.5)
+
     def test_raw_analysis_option_is_exposed(self):
         body, content_type = multipart(b"raw-bytes", raw=True)
         with self.request("/api/analyze", "POST", body, content_type) as response:

@@ -1,6 +1,7 @@
 import struct
 import unittest
 
+from packetscope.analysis import analyze_packets
 from packetscope.errors import FormatError, InputLimitError
 from packetscope.importers import import_bytes
 from packetscope.models import Limits
@@ -115,6 +116,64 @@ class ImporterTests(unittest.TestCase):
             import_bytes("big.bin", b"1234", limits=Limits(max_packet_bytes=3))
         with self.assertRaises(FormatError):
             import_bytes("bad.pcap", b"\xd4\xc3\xb2\xa1" + b"\x00" * 20)
+
+    def test_message_capture_formats_join_existing_import_and_analysis_pipeline(self):
+        jsonl = (
+            b'{"timestamp":2.5,"direction":"tx","source":"uart0",'
+            b'"raw":"AQI="}\n\n'
+            b'{"timestamp":1,"direction":"rx","source":"usb:1-2",'
+            b'"raw":"/w==","metadata":{"channel":1}}\n'
+        )
+        imported = import_bytes("mixed.jsonl", jsonl)
+        self.assertEqual(imported.format, "jsonl")
+        self.assertEqual([packet.payload for packet in imported.packets], [b"\x01\x02", b"\xff"])
+        self.assertEqual([packet.timestamp for packet in imported.packets], [2.5, 1])
+        self.assertEqual([packet.direction for packet in imported.packets], ["tx", "rx"])
+        self.assertEqual([packet.source_identity for packet in imported.packets], ["uart0", "usb:1-2"])
+        self.assertEqual([packet.source_name for packet in imported.packets], ["mixed.jsonl"] * 2)
+        self.assertEqual(imported.packets[1].metadata, {"channel": 1})
+
+        result = analyze_packets(imported.packets)
+        self.assertEqual(result["source"]["format"], "normalized")
+        self.assertEqual(result["packets"][0]["direction"], "tx")
+        self.assertEqual(result["packets"][0]["source_identity"], "uart0")
+        self.assertEqual(result["packets"][0]["source"], "uart0")
+        self.assertEqual(result["packets"][1]["timestamp"], 1)
+
+    def test_uart_and_can_dispatch_keep_direction_timestamps_and_can_provenance(self):
+        uart = import_bytes("serial.uart", b"1.25\trx\tserial0\tAAEC\n2\ttx\tserial0\t/w==\n")
+        self.assertEqual(uart.format, "uart-lines")
+        self.assertEqual([packet.direction for packet in uart.packets], ["rx", "tx"])
+        self.assertEqual([packet.timestamp for packet in uart.packets], [1.25, 2])
+        self.assertEqual(uart.packets[0].source_identity, "serial0")
+
+        can = import_bytes("bus.can", b"3\trx\tcan0\t0x123#" + b"00" * 8 + b"\n")
+        self.assertEqual(can.format, "can-lines")
+        self.assertEqual(can.packets[0].metadata, {"can_id": 0x123})
+        self.assertEqual(can.packets[0].direction, "rx")
+        self.assertEqual(can.packets[0].source_identity, "can0")
+        self.assertEqual(can.packets[0].timestamp, 3)
+
+        fd = import_bytes("bus.can", b"4\ttx\tcan0\t1#" + b"ab" * 64 + b"\n", "can")
+        self.assertEqual(len(fd.packets[0].payload), 64)
+
+    def test_message_dispatch_rejects_mixed_malformed_empty_oversized_and_truncated_records(self):
+        valid = b'{"timestamp":0,"direction":"rx","source":"s","raw":"AA=="}\n'
+        self.assertEqual(import_bytes("empty.jsonl", b"").packets, [])
+        with self.assertRaises(FormatError):
+            import_bytes("mixed.jsonl", valid + b"1.0\trx\ts\tAA==\n")
+        with self.assertRaises(FormatError):
+            import_bytes("truncated.uart", b"1.0\trx\ts\tAA")
+        with self.assertRaises(FormatError):
+            import_bytes("truncated.can", b"1.0\trx\ts\t123#0\n")
+        with self.assertRaises(InputLimitError):
+            import_bytes(
+                "oversized.jsonl",
+                b'{"timestamp":0,"direction":"rx","source":"s","raw":"AQI="}\n',
+                limits=Limits(max_packet_bytes=1),
+            )
+        with self.assertRaises(InputLimitError):
+            import_bytes("oversized.can", b"1.0\trx\ts\t123#" + b"00" * 65 + b"\n")
 
 
 if __name__ == "__main__":

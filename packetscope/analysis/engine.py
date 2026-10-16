@@ -216,6 +216,21 @@ def _analysis_views(packets: list[Packet], analyze_raw: bool) -> tuple[list[_Vie
 
 def _packet_json(packet: Packet, payload_budget: int | None = None) -> dict:
     item = asdict(packet)
+    # Do not expand the serialized shape of the legacy packet importers with
+    # null message-oriented fields. They remain present only for records that
+    # actually supplied normalized/UART/CAN provenance.
+    if packet.direction is None:
+        item.pop("direction", None)
+    if packet.source_identity is None:
+        item.pop("source_identity", None)
+    if packet.boundary is None:
+        item.pop("boundary", None)
+    if not packet.metadata:
+        item.pop("metadata", None)
+    if packet.source_identity is not None:
+        # Keep the normalized capture contract's field name visible in API
+        # results while retaining the explicit Packet-model name alongside it.
+        item["source"] = packet.source_identity
     if payload_budget is None:
         payload_budget = len(packet.payload)
     payload = packet.payload[: max(0, payload_budget // 2)]

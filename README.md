@@ -102,7 +102,8 @@ make serve
 ```
 
 Open <http://127.0.0.1:8765>. Upload a `.bin`, `.hex`, `.pcap`, or `.pcapng`
-file. The default upload limit is 64 MiB, which also matches the aggregate payload
+file. The CLI and multipart API also accept normalized `.jsonl`, `.uart`, and
+`.can` captures. The default upload limit is 64 MiB, which also matches the aggregate payload
 budget retained by asynchronous jobs; individual packets are limited to 16 MiB
 and the capture to 100,000 packets.
 

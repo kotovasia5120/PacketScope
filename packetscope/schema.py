@@ -282,6 +282,8 @@ _V2_MAX_DEFINITIONS = 128
 _V2_MAX_EXPRESSION_DEPTH = 32
 _V2_MAX_EXPRESSION_KEYS = 32
 _V2_MAX_DESCRIPTION = 2000
+_V2_MAX_CONSTRAINT_VALUES = 10_000
+_V2_JSON_SAFE_INTEGER_MAX = (1 << 53) - 1
 _V2_DEFAULT_BUDGETS = {
     "max_packets": 100_000,
     "max_fields": MAX_FIELDS,
@@ -440,6 +442,61 @@ def _v2_slug(value: str) -> str:
     return result or "field"
 
 
+def _v2_preflight_field_tree(fields: Any, *, max_fields: int, max_depth: int, path: str, count: list[int]) -> None:
+    """Check field-tree expansion limits before recursively normalizing it.
+
+    Normalization copies nested descriptors and array element descriptors.  A
+    schema may therefore exhaust the field or nesting budget before the later
+    normalized-tree checks get a chance to run.  Keep this pass iterative so a
+    hostile descriptor cannot consume Python recursion first.
+    """
+    if not isinstance(fields, list):
+        return
+    pending: list[tuple[Any, int, str]] = [(item, 0, f"{path}[{index}]") for index, item in reversed(list(enumerate(fields)))]
+    while pending:
+        item, depth, item_path = pending.pop()
+        count[0] += 1
+        if count[0] > max_fields:
+            raise ValueError("schema fields are missing or exceed the limit")
+        if depth > max_depth:
+            raise ValueError(f"{item_path} exceeds the nesting limit")
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("fields")
+        if isinstance(nested, list):
+            if len(nested) > max_fields:
+                raise ValueError("schema fields are missing or exceed the limit")
+            pending.extend(
+                (child, depth + 1, f"{item_path}.fields[{index}]")
+                for index, child in reversed(list(enumerate(nested)))
+            )
+        array = item.get("array")
+        if array is True:
+            array = {}
+        elif array is None and ("count" in item or "element" in item or str(item.get("type", "")).lower() == "array"):
+            array = {"count": item.get("count"), "element": item.get("element")}
+        if isinstance(array, dict):
+            element = array.get("element", item.get("element"))
+            if element is None:
+                element = {"type": item.get("element_type", "bytes"), "length": item.get("element_length")}
+            pending.append((element, depth + 1, f"{item_path}.array.element"))
+
+
+def _v2_constraint_container_limits(constraints: dict[str, Any], *, field_index: int) -> None:
+    """Reject large constraint collections before copying their values."""
+    if len(constraints) > _V2_MAX_EXPRESSION_KEYS:
+        raise ValueError(f"schema field {field_index} constraints have too many keys")
+    for key, candidate in constraints.items():
+        if isinstance(candidate, list) and len(candidate) > _V2_MAX_CONSTRAINT_VALUES:
+            raise ValueError(f"schema field {field_index} {key} values exceed the limit")
+        if key == "enum" and isinstance(candidate, dict):
+            enum_values = candidate.get("values", candidate.get("allowed"))
+            if enum_values is None:
+                enum_values = list(candidate)
+            if isinstance(enum_values, list) and len(enum_values) > _V2_MAX_CONSTRAINT_VALUES:
+                raise ValueError(f"schema field {field_index} enum values exceed the limit")
+
+
 def _v2_normalize_field(item: Any, *, index: int, parent_id: str | None = None, require_id: bool = False) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise ValueError(f"schema field {index} must be an object")
@@ -466,8 +523,18 @@ def _v2_normalize_field(item: Any, *, index: int, parent_id: str | None = None, 
     endian = str(item.get("endian", "big")).lower()
     if endian not in {"big", "little", "unknown"}:
         raise ValueError(f"schema field {index} endian is invalid")
+    signed = item.get("signed")
+    if signed is not None and not isinstance(signed, bool):
+        raise ValueError(f"schema field {index} signed is invalid")
+    if signed is not None and type_name not in _V2_INT_TYPES and type_name not in {"uint", "unsigned", "unsigned_integer", "int", "signed", "signed_integer", "integer"}:
+        raise ValueError(f"schema field {index} signed is only valid for integer fields")
     offset = item.get("offset", item.get("offset_expr", 0))
     length = item.get("length", item.get("width", item.get("length_expr")))
+    if length is None and "width_bits" in item:
+        width_bits = item["width_bits"]
+        if isinstance(width_bits, bool) or not isinstance(width_bits, int) or width_bits <= 0 or width_bits % 8:
+            raise ValueError(f"schema field {index} width_bits is invalid")
+        length = width_bits // 8
     if isinstance(offset, bool) or isinstance(length, bool):
         raise ValueError(f"schema field {index} offset/length is invalid")
     offset = _v2_normalize_expr(offset, path=f"field {field_id} offset")
@@ -497,25 +564,35 @@ def _v2_normalize_field(item: Any, *, index: int, parent_id: str | None = None, 
         element = _v2_normalize_field(element, index=0, parent_id=f"{field_id}[]", require_id=False)
         max_items = array_raw.get("max_items", array_raw.get("max_count"))
         if max_items is not None:
-            if isinstance(max_items, bool):
+            if isinstance(max_items, bool) or isinstance(max_items, float):
                 raise ValueError(f"schema field {index} array max_items is invalid")
-            try:
-                max_items = int(max_items)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"schema field {index} array max_items is invalid") from exc
+            if isinstance(max_items, int):
+                normalized_max_items = max_items
+            elif isinstance(max_items, str) and max_items.strip().lstrip("-").isdigit():
+                normalized_max_items = int(max_items.strip())
+            else:
+                raise ValueError(f"schema field {index} array max_items is invalid")
+            max_items = normalized_max_items
             if max_items <= 0 or max_items > 1_000_000:
                 raise ValueError(f"schema field {index} array max_items is out of bounds")
         array = {"count": count, "element": element, "max_items": max_items}
     definition = item.get("definition", item.get("use"))
     if definition is not None and not isinstance(definition, str):
         raise ValueError(f"schema field {index} definition is invalid")
+    constraints = item.get("constraints", {})
+    if not isinstance(constraints, dict):
+        raise ValueError(f"schema field {index} constraints must be an object")
+    _v2_constraint_container_limits(constraints, field_index=index)
+    constraints = _v2_json_safe(constraints)
+    field_path = field_id if parent_id and field_id.startswith(f"{parent_id}.") else f"{parent_id}.{field_id}" if parent_id else field_id
     return {
         "id": field_id, "name": name.strip(), "description": description,
         "type": type_name, "coordinate_system": coordinate_system,
         "coordinate": normalized_coordinate, "offset": offset, "length": length,
-        "endian": endian, "encoding": str(item.get("encoding", ""))[:40],
+        "endian": endian, "signed": signed, "encoding": str(item.get("encoding", ""))[:40],
         "presence": presence, "fields": nested, "array": array,
-        "definition": definition, "constraints": _v2_json_safe(item.get("constraints", {})),
+        "definition": definition, "constraints": constraints,
+        "path": field_path,
         "metadata": _v2_json_safe(item.get("metadata", {})),
         "algorithm": _v2_json_safe(item.get("algorithm")) if item.get("algorithm") is not None else None,
         "byte_order": _v2_json_safe(item.get("byte_order")) if item.get("byte_order") is not None else None,
@@ -574,6 +651,13 @@ def _v2_field_expressions(field: dict[str, Any]) -> Iterable[Any]:
     if isinstance(nested, list):
         for child in nested:
             yield from _v2_field_expressions(child)
+    constraints = field.get("constraints")
+    if isinstance(constraints, dict):
+        relation = _v2_constraint_relation_descriptor(field, constraints)
+        if isinstance(relation, dict):
+            target = relation.get("target", relation.get("field", relation.get("field_id", relation.get("target_field", relation.get("target_field_id")))))
+            if isinstance(target, str):
+                yield {"field": target}
 
 
 def _v2_schema_graph(fields: list[dict[str, Any]], definitions: dict[str, dict[str, Any]]) -> tuple[dict[str, set[str]], list[dict[str, Any]]]:
@@ -643,6 +727,8 @@ def _validate_schema_v2(schema: dict[str, Any]) -> dict[str, Any]:
     fields_raw = schema.get("fields")
     if not isinstance(fields_raw, list) or len(fields_raw) > budgets["max_fields"]:
         raise ValueError("schema fields are missing or exceed the limit")
+    field_count = [0]
+    _v2_preflight_field_tree(fields_raw, max_fields=budgets["max_fields"], max_depth=budgets["max_nesting"], path="fields", count=field_count)
     fields = [_v2_normalize_field(item, index=index, require_id=True) for index, item in enumerate(fields_raw)]
     _v2_fill_coordinates(fields, coordinate_system)
     definitions_raw = schema.get("definitions", {})
@@ -657,6 +743,7 @@ def _validate_schema_v2(schema: dict[str, Any]) -> dict[str, Any]:
         raw_definition_fields = raw_definition.get("fields", [])
         if not isinstance(raw_definition_fields, list) or len(raw_definition_fields) > budgets["max_fields"]:
             raise ValueError(f"schema definition {definition_name} fields exceed the limit")
+        _v2_preflight_field_tree(raw_definition_fields, max_fields=budgets["max_fields"], max_depth=budgets["max_nesting"], path=f"definitions.{definition_name}.fields", count=field_count)
         definitions[definition_name] = {
             "name": str(raw_definition.get("name", definition_name))[:120],
             "description": str(raw_definition.get("description", ""))[:_V2_MAX_DESCRIPTION],
@@ -670,7 +757,8 @@ def _validate_schema_v2(schema: dict[str, Any]) -> dict[str, Any]:
     duplicates = sorted({field_id for field_id in field_ids if field_ids.count(field_id) > 1})
     if duplicates:
         raise ValueError(f"schema field ids must be unique: {duplicates[0]}")
-    relationships_raw = schema.get("relationships", schema.get("checksums", schema.get("checksum_relationships", [])))
+    relationship_key = next((key for key in ("relationships", "checksums", "checksum_relationships", "length_relationships") if key in schema), None)
+    relationships_raw = schema.get(relationship_key, []) if relationship_key is not None else []
     if not isinstance(relationships_raw, list) or len(relationships_raw) > budgets["max_fields"]:
         raise ValueError("schema relationships are invalid or exceed the limit")
     relationships: list[dict[str, Any]] = []
@@ -679,7 +767,7 @@ def _validate_schema_v2(schema: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"schema relationship {index} must be an object")
         item = _v2_json_safe(relationship)
         item.setdefault("id", f"relationship_{index}")
-        item.setdefault("kind", "checksum")
+        item.setdefault("kind", "length" if relationship_key == "length_relationships" else "checksum")
         relationships.append(item)
     refs_by_id, diagnostics = _v2_schema_graph(fields, definitions)
     normalized = {
@@ -720,6 +808,16 @@ def _v2_numeric(value: Any) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _v2_public_integer(value: int) -> int | str:
+    """Keep integers lossless without emitting unsafe JSON numbers."""
+    return value if -_V2_JSON_SAFE_INTEGER_MAX <= value <= _V2_JSON_SAFE_INTEGER_MAX else str(value)
+
+
+def _v2_is_integer_type(type_name: Any) -> bool:
+    normalized = str(type_name or "").lower()
+    return normalized in _V2_INT_TYPES or normalized in {"uint", "unsigned", "unsigned_integer", "int", "signed", "signed_integer", "integer"}
 
 
 def _v2_eval_expr(expr: Any, values: dict[str, dict[str, Any]], budgets: dict[str, int], *, depth: int = 0) -> dict[str, Any]:
@@ -888,10 +986,17 @@ def _v2_decode_value(raw: bytes, field: dict[str, Any]) -> tuple[str, Any, Any, 
             width, signed = len(raw), type_name in {"int", "signed", "signed_integer"}
             if width <= 0 or width > 16:
                 return "INVALID", None, None, [_v2_diag("INVALID", "integer_width", "generic integer width is unsupported")]
+        signed_override = field.get("signed")
+        if signed_override is None and isinstance(field.get("constraints"), dict) and isinstance(field["constraints"].get("signed"), bool):
+            signed_override = field["constraints"]["signed"]
+        if signed_override is not None:
+            if type_name in _V2_INT_TYPES and signed_override != signed:
+                return "INVALID", None, None, [_v2_diag("INVALID", "integer_signedness", "signedness conflicts with the declared integer type")]
+            signed = signed_override
         if field["endian"] not in {"big", "little"}:
             return "INVALID", None, None, [_v2_diag("INVALID", "integer_endian", "integer fields require big or little endian")]
         value = int.from_bytes(raw, field["endian"], signed=signed)
-        return "RESOLVED", value, value, []
+        return "RESOLVED", _v2_public_integer(value), value, []
     if type_name in {"bool", "boolean"}:
         value = bool(int.from_bytes(raw, "big"))
         return "RESOLVED", value, value, []
@@ -910,15 +1015,386 @@ def _v2_decode_value(raw: bytes, field: dict[str, Any]) -> tuple[str, Any, Any, 
     return "INVALID", None, None, [_v2_diag("INVALID", "unsupported_type", f"field type {type_name!r} is unsupported")]
 
 
+def _v2_constraint_number(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _v2_constraint_equal(actual: Any, expected: Any) -> bool:
+    actual_number = _v2_constraint_number(actual)
+    expected_number = _v2_constraint_number(expected)
+    if actual_number is not None and expected_number is not None:
+        return actual_number == expected_number
+    return type(actual) is type(expected) and actual == expected
+
+
+def _v2_constraint_public_number(raw: Any, parsed: int) -> int | str:
+    """Keep constraint evidence in the same JSON-safe form as field values."""
+    return raw.strip() if isinstance(raw, str) else _v2_public_integer(parsed)
+
+
+def _v2_constraint_values(raw: Any) -> tuple[list[Any] | None, str | None]:
+    if not isinstance(raw, list):
+        return None, "constraint values must be an array"
+    if len(raw) > _V2_MAX_CONSTRAINT_VALUES:
+        return None, "constraint values exceed the limit"
+    return raw, None
+
+
+def _v2_mask_value(raw: Any) -> int | None:
+    number = _v2_constraint_number(raw)
+    if number is not None and number >= 0:
+        return number
+    if isinstance(raw, list):
+        mask = 0
+        for bit in raw:
+            bit_number = _v2_constraint_number(bit)
+            if bit_number is None or bit_number < 0 or bit_number >= 128:
+                return None
+            mask |= 1 << bit_number
+        return mask
+    return None
+
+
+def _v2_constraint_diag(
+    field: dict[str, Any],
+    result: dict[str, Any],
+    code: str,
+    message: str,
+    *,
+    status: str = "INVALID",
+    **extra: Any,
+) -> dict[str, Any]:
+    """Create a constraint diagnostic with stable field-local evidence."""
+    extra.setdefault("field_id", field["id"])
+    extra.setdefault("path", field.get("path", field["id"]))
+    extra.setdefault("offset", result.get("offset"))
+    extra.setdefault("length", result.get("length"))
+    return _v2_diag(status, code, message, **extra)
+
+
+_V2_CONSTRAINT_DIAG_BASE = _v2_constraint_diag
+
+
+def _v2_constraint_relation_descriptor(field: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any] | None:
+    relation = constraints.get("length_relationship", constraints.get("length_relation"))
+    if relation is None and constraints.get("length_of") is not None:
+        relation = {"target": constraints.get("length_of")}
+    if relation is None and constraints.get("matches_length") is not None:
+        relation = {"target": constraints.get("matches_length")}
+    if relation is None:
+        return None
+    if isinstance(relation, str):
+        relation = {"target": relation}
+    if not isinstance(relation, dict):
+        return {"target": relation}
+    return dict(relation)
+
+
+def _v2_validate_field_constraints(
+    field: dict[str, Any],
+    result: dict[str, Any],
+    values: dict[str, dict[str, Any]],
+    checked: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Evaluate reviewed data constraints after a field has decoded.
+
+    Constraint failures deliberately use the existing INVALID field state.  A
+    constraint whose dependency is incomplete keeps that dependency's state so
+    truncation and unresolved conditions are not reported as bad bytes.
+    """
+    constraints = field.get("constraints", {})
+    base_constraint_diag = _V2_CONSTRAINT_DIAG_BASE
+    def constraint_diag(code: str, message: str, *, status: str = "INVALID", **extra: Any) -> dict[str, Any]:
+        return base_constraint_diag(field, result, code, message, status=status, **extra)
+
+    # Keep the constraint evaluation below concise while ensuring every
+    # diagnostic gets field-local evidence.
+    _v2_constraint_diag = constraint_diag
+    if not isinstance(constraints, dict):
+        return "INVALID", [constraint_diag("constraints_type", "field constraints must be an object")]
+    # Use the public JSON-safe value for diagnostics and exact comparisons;
+    # numeric helpers still recover the integer represented by wide decimal
+    # strings.  The internal value remains available to dependent expressions.
+    actual = result.get("value")
+    diagnostics: list[dict[str, Any]] = []
+    invalid = False
+
+    def require_number(raw: Any, code: str, label: str) -> int | None:
+        number = _v2_constraint_number(raw)
+        if number is None:
+            diagnostics.append(_v2_constraint_diag(code, f"{label} must be an integer"))
+            return None
+        return number
+
+    numeric_actual = _v2_constraint_number(actual)
+    for key, aliases, comparator, reason in (
+        ("minimum", ("minimum", "min"), lambda value, bound: value >= bound, "value is below the minimum"),
+        ("maximum", ("maximum", "max"), lambda value, bound: value <= bound, "value is above the maximum"),
+        ("exact", ("exact", "equals", "equal"), lambda value, bound: value == bound, "value does not equal the required value"),
+    ):
+        declared = next((constraints[name] for name in aliases if name in constraints), None)
+        if not any(name in constraints for name in aliases):
+            continue
+        if key == "exact":
+            if not _v2_constraint_equal(actual, declared):
+                expected_number = _v2_constraint_number(declared)
+                expected = _v2_constraint_public_number(declared, expected_number) if expected_number is not None else declared
+                diagnostics.append(_v2_constraint_diag("exact", reason, expected=expected, actual=actual))
+                invalid = True
+            continue
+        bound = require_number(declared, f"{key}_type", key)
+        if bound is None:
+            invalid = True
+        elif numeric_actual is None:
+            diagnostics.append(_v2_constraint_diag(f"{key}_value", f"{key} requires an integer field value"))
+            invalid = True
+        elif not comparator(numeric_actual, bound):
+            diagnostics.append(_v2_constraint_diag(key, reason, expected=_v2_constraint_public_number(declared, bound), actual=_v2_public_integer(numeric_actual)))
+            invalid = True
+
+    for key, aliases, reason in (
+        ("allowed", ("allowed", "one_of"), "value is not in the allowed set"),
+        ("forbidden", ("forbidden", "not_allowed", "disallowed"), "value is in the forbidden set"),
+    ):
+        declared = next((constraints[name] for name in aliases if name in constraints), None)
+        if not any(name in constraints for name in aliases):
+            continue
+        candidates, error = _v2_constraint_values(declared)
+        if error:
+            diagnostics.append(_v2_constraint_diag(f"{key}_type", error))
+            invalid = True
+        elif key == "allowed" and not any(_v2_constraint_equal(actual, candidate) for candidate in candidates or []):
+            diagnostics.append(_v2_constraint_diag("allowed", reason, actual=actual, allowed=candidates))
+            invalid = True
+        elif key == "forbidden" and any(_v2_constraint_equal(actual, candidate) for candidate in candidates or []):
+            diagnostics.append(_v2_constraint_diag("forbidden", reason, actual=actual, forbidden=candidates))
+            invalid = True
+
+    enum = constraints.get("enum")
+    enum_policy = constraints.get("enum_policy", "strict")
+    enum_values = enum
+    if isinstance(enum, dict):
+        enum_policy = enum.get("policy", enum.get("unknown_policy", enum_policy))
+        enum_values = enum.get("values", enum.get("allowed"))
+        if enum_values is None:
+            enum_values = list(enum)
+    if enum is not None:
+        if enum_policy not in {"strict", "diagnostic", "warn", "allow_unknown", "permissive", "open", "ignore"}:
+            diagnostics.append(_v2_constraint_diag("enum_policy", "enum policy is unsupported"))
+            invalid = True
+        else:
+            candidates, error = _v2_constraint_values(enum_values)
+            if error:
+                diagnostics.append(_v2_constraint_diag("enum_type", error))
+                invalid = True
+            elif not any(_v2_constraint_equal(actual, candidate) for candidate in candidates or []):
+                if enum_policy == "strict":
+                    diagnostics.append(_v2_constraint_diag("enum", "value is not declared by the enum", actual=actual, enum=candidates))
+                    invalid = True
+                elif enum_policy != "ignore":
+                    diagnostics.append(_v2_constraint_diag("enum_unknown", "value is not declared by the enum; policy permits it", status="RESOLVED", actual=actual, enum=candidates, policy=enum_policy))
+
+    width = next((constraints[name] for name in ("width", "width_bytes") if name in constraints), None)
+    if width is not None:
+        expected_width = require_number(width, "width_type", "width")
+        if expected_width is not None and result.get("length") not in {expected_width, expected_width // 8 if expected_width > 0 and expected_width % 8 == 0 else -1}:
+            diagnostics.append(_v2_constraint_diag("width", "field byte width does not match the constraint", expected=expected_width, actual=result.get("length")))
+            invalid = True
+    if "width_bits" in constraints:
+        expected_bits = require_number(constraints["width_bits"], "width_bits_type", "width_bits")
+        if expected_bits is None or expected_bits <= 0 or expected_bits % 8:
+            diagnostics.append(_v2_constraint_diag("width_bits", "width_bits must be a positive multiple of eight"))
+            invalid = True
+        elif result.get("length") != expected_bits // 8:
+            diagnostics.append(_v2_constraint_diag("width_bits", "field byte width does not match width_bits", expected=expected_bits, actual=(result.get("length") or 0) * 8))
+            invalid = True
+    if "signed" in constraints:
+        expected_signed = constraints["signed"]
+        if not isinstance(expected_signed, bool):
+            diagnostics.append(_v2_constraint_diag("signed_type", "signed constraint must be boolean"))
+            invalid = True
+        elif field.get("type") not in _V2_INT_TYPES and field.get("type") not in {"uint", "unsigned", "unsigned_integer", "int", "signed", "signed_integer", "integer"}:
+            diagnostics.append(_v2_constraint_diag("signed_type", "signed constraint requires an integer field"))
+            invalid = True
+        elif field.get("signed") is not None and field.get("signed") != expected_signed:
+            diagnostics.append(_v2_constraint_diag("signed", "field signedness conflicts with its constraint", expected=expected_signed, actual=field.get("signed")))
+            invalid = True
+
+    bit_constraint_present = any(key in constraints for key in ("mask", "bit_mask", "bitmask", "reserved", "reserved_bits", "flags", "required_flags", "forbidden_flags", "mutual_exclusion", "mutually_exclusive", "exclusive"))
+    if numeric_actual is not None:
+        mask_raw = next((constraints[name] for name in ("mask", "bit_mask", "bitmask") if name in constraints), None)
+        if mask_raw is not None:
+            mask = _v2_mask_value(mask_raw.get("mask", mask_raw.get("allowed", mask_raw)) if isinstance(mask_raw, dict) else mask_raw)
+            expected = next((mask_raw[name] for name in ("value", "expected") if name in mask_raw), None) if isinstance(mask_raw, dict) else None
+            if mask is None:
+                diagnostics.append(_v2_constraint_diag("mask_type", "bit mask must be a non-negative integer or bit list"))
+                invalid = True
+            elif expected is not None:
+                expected_number = require_number(expected, "mask_value", "mask value")
+                if expected_number is None or numeric_actual & mask != expected_number & mask:
+                    diagnostics.append(_v2_constraint_diag("mask", "masked value does not match the expected bits", mask=mask, expected=expected_number, actual=numeric_actual & mask))
+                    invalid = True
+            elif numeric_actual & ~mask:
+                diagnostics.append(_v2_constraint_diag("mask", "value contains bits outside the allowed mask", mask=mask, actual=numeric_actual))
+                invalid = True
+
+        reserved = constraints.get("reserved", constraints.get("reserved_bits"))
+        if reserved is not None:
+            reserved_mask = _v2_mask_value(reserved.get("mask", reserved.get("bits", reserved)) if isinstance(reserved, dict) else reserved)
+            if reserved_mask is None:
+                diagnostics.append(_v2_constraint_diag("reserved_type", "reserved bits must be a non-negative mask or bit list"))
+                invalid = True
+            elif numeric_actual & reserved_mask:
+                diagnostics.append(_v2_constraint_diag("reserved", "reserved bits are set", mask=reserved_mask, actual=numeric_actual & reserved_mask))
+                invalid = True
+
+        flags = constraints.get("flags")
+        flag_masks: dict[str, int | None] = {}
+        if isinstance(flags, dict):
+            flag_masks = {str(name): _v2_mask_value(mask) for name, mask in flags.items() if name not in {"required", "forbidden", "reserved", "mutual_exclusion"}}
+        elif isinstance(flags, list):
+            if len(flags) > _V2_MAX_CONSTRAINT_VALUES:
+                diagnostics.append(_v2_constraint_diag("flags_type", "flags exceed the limit"))
+                invalid = True
+            else:
+                for index, flag in enumerate(flags):
+                    if isinstance(flag, dict):
+                        name = flag.get("name", f"flag_{index}")
+                        mask = flag.get("mask", flag.get("value", flag.get("bit")))
+                    else:
+                        name, mask = f"flag_{index}", flag
+                    if not isinstance(name, str):
+                        diagnostics.append(_v2_constraint_diag("flags_type", "flag names must be strings"))
+                        invalid = True
+                    else:
+                        flag_masks[name] = _v2_mask_value(mask)
+        elif flags is not None:
+            diagnostics.append(_v2_constraint_diag("flags_type", "flags must be an object or array of flag descriptors"))
+            invalid = True
+
+        required_flags = constraints.get("required_flags", constraints.get("required"))
+        forbidden_flags = constraints.get("forbidden_flags")
+        if flag_masks:
+            for flag_key, flag_set, reason in (("required_flags", required_flags, "required flag is not set"), ("forbidden_flags", forbidden_flags, "forbidden flag is set")):
+                if flag_set is None:
+                    continue
+                names = flag_set if isinstance(flag_set, list) else [flag_set]
+                if not all((isinstance(name, str) and name in flag_masks) or _v2_mask_value(name) is not None for name in names):
+                    diagnostics.append(_v2_constraint_diag(f"{flag_key}_type", f"{flag_key} must name declared flags"))
+                    invalid = True
+                    continue
+                for name in names:
+                    flag_mask = flag_masks.get(name) if isinstance(name, str) else _v2_mask_value(name)
+                    if flag_mask is None:
+                        diagnostics.append(_v2_constraint_diag("flag_mask", f"flag {name!r} has an invalid mask"))
+                        invalid = True
+                    elif ((numeric_actual & flag_mask) == 0 if flag_key == "required_flags" else (numeric_actual & flag_mask) != 0):
+                        diagnostics.append(_v2_constraint_diag(flag_key, reason, flag=name, mask=flag_mask))
+                        invalid = True
+        elif required_flags is not None or forbidden_flags is not None:
+            for flag_key, flag_set, reason in (("required_flags", required_flags, "required flag is not set"), ("forbidden_flags", forbidden_flags, "forbidden flag is set")):
+                if flag_set is None:
+                    continue
+                masks = flag_set if isinstance(flag_set, list) else [flag_set]
+                for raw_mask in masks:
+                    flag_mask = _v2_mask_value(raw_mask)
+                    if flag_mask is None:
+                        diagnostics.append(_v2_constraint_diag(f"{flag_key}_type", f"{flag_key} must contain flag names or masks"))
+                        invalid = True
+                    elif ((numeric_actual & flag_mask) == 0 if flag_key == "required_flags" else (numeric_actual & flag_mask) != 0):
+                        diagnostics.append(_v2_constraint_diag(flag_key, reason, mask=flag_mask))
+                        invalid = True
+
+        exclusions = constraints.get("mutual_exclusion", constraints.get("mutually_exclusive", constraints.get("exclusive")))
+        if exclusions is not None:
+            named_exclusions = bool(flag_masks) and isinstance(exclusions, list) and all(isinstance(item, str) for item in exclusions)
+            groups = [exclusions] if named_exclusions or (isinstance(exclusions, list) and all(not isinstance(item, (list, dict)) for item in exclusions)) else exclusions if isinstance(exclusions, list) else [exclusions]
+            for group in groups:
+                raw_items = group if isinstance(group, list) else [group]
+                if flag_masks and named_exclusions:
+                    masks = [flag_masks.get(item) for item in raw_items]
+                elif flag_masks and all(isinstance(item, str) for item in raw_items):
+                    masks = [flag_masks.get(item) for item in raw_items]
+                else:
+                    masks = [_v2_mask_value(item.get("mask") if isinstance(item, dict) else item) for item in raw_items]
+                if len(masks) < 2 or any(mask is None for mask in masks):
+                    diagnostics.append(_v2_constraint_diag("mutual_exclusion_type", "mutual exclusion must contain at least two valid flags or masks"))
+                    invalid = True
+                elif sum(bool(numeric_actual & mask) for mask in masks if mask is not None) > 1:
+                    diagnostics.append(_v2_constraint_diag("mutual_exclusion", "mutually exclusive flags are set", masks=masks))
+                    invalid = True
+    elif bit_constraint_present:
+        diagnostics.append(_v2_constraint_diag("bit_constraint_type", "bit masks and flags require an integer field"))
+        invalid = True
+
+    relation = _v2_constraint_relation_descriptor(field, constraints)
+    if relation is not None:
+        target = relation.get("target", relation.get("field", relation.get("field_id", relation.get("target_field", relation.get("target_field_id")))))
+        if not isinstance(target, str):
+            diagnostics.append(_v2_constraint_diag("length_relationship", "length relationship target must be a field id"))
+            invalid = True
+        else:
+            target_result = values.get(target)
+            if target_result is None:
+                diagnostics.append(_v2_constraint_diag("length_relationship", f"length relationship target {target!r} does not exist", reference=target))
+                invalid = True
+            elif target_result.get("status") != "RESOLVED":
+                dependency_status = target_result.get("status", "UNKNOWN")
+                return dependency_status, [_v2_constraint_diag("length_relationship_dependency", f"length relationship target {target!r} is not resolved", status=dependency_status, reference=target)]
+            else:
+                if not isinstance(target_result.get("length"), int):
+                    return "UNKNOWN", [_v2_constraint_diag("length_relationship_absent", f"length relationship target {target!r} has no concrete length", status="UNKNOWN", reference=target)]
+                mode = str(relation.get("mode", relation.get("kind", "length"))).lower()
+                expected = target_result.get("length")
+                if mode in {"total", "through_end", "end"}:
+                    expected = (target_result.get("offset") or 0) + (target_result.get("length") or 0)
+                elif mode in {"after", "bytes_after"}:
+                    expected = (checked.get("_current_data_length") or 0) - (target_result.get("offset") or 0)
+                adjustment = _v2_constraint_number(relation.get("adjust", relation.get("offset", 0)))
+                if adjustment is None:
+                    diagnostics.append(_v2_constraint_diag("length_relationship", "length relationship adjustment must be an integer"))
+                    invalid = True
+                else:
+                    expected = (expected or 0) + adjustment
+                    if numeric_actual != expected:
+                        diagnostics.append(_v2_constraint_diag("length_relationship", "length does not match the related field", reference=target, expected=expected, actual=numeric_actual, mode=mode))
+                        invalid = True
+
+    return ("INVALID" if invalid else "RESOLVED"), diagnostics
+
+
 def _v2_public_field(field: dict[str, Any], result: dict[str, Any], *, value: Any = None, present: bool = True, items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    diagnostics = sorted(result.get("diagnostics", []), key=lambda item: (item.get("code", ""), item.get("message", ""), str(item.get("reference", ""))))
+    diagnostics: list[dict[str, Any]] = []
+    for diagnostic in result.get("diagnostics", []):
+        if not isinstance(diagnostic, dict):
+            continue
+        contextual = dict(diagnostic)
+        contextual.setdefault("field_id", field["id"])
+        contextual.setdefault("path", field.get("path", field["id"]))
+        contextual.setdefault("offset", result.get("offset"))
+        contextual.setdefault("length", result.get("length"))
+        diagnostics.append(contextual)
+    result["diagnostics"] = diagnostics
+    diagnostics.sort(key=lambda item: (item.get("code", ""), item.get("message", ""), str(item.get("reference", ""))))
+    diagnostics = diagnostics[:32]
+    result["diagnostics"] = diagnostics
+    integer_type = _v2_is_integer_type(field.get("type"))
     output = {
-        "id": field["id"], "name": field["name"], "description": field.get("description", ""),
+        "id": field["id"], "path": field.get("path", field["id"]), "name": field["name"], "description": field.get("description", ""),
         "status": result["status"], "present": present,
         "available": result["status"] == "RESOLVED" and present,
         "offset": result.get("offset"), "length": result.get("length"), "width": result.get("length"),
         "coordinate_system": field.get("coordinate_system"), "value": value if present else None,
-        "value_encoding": "decimal" if isinstance(value, int) and not isinstance(value, bool) else "boolean" if isinstance(value, bool) else "text" if isinstance(value, str) and field["type"] in {"text", "string", "utf8", "ascii"} else "hex" if isinstance(value, str) else None,
+        "value_encoding": "decimal" if integer_type and (isinstance(value, (int, str)) and not isinstance(value, bool)) else "boolean" if isinstance(value, bool) else "text" if isinstance(value, str) and field["type"] in {"text", "string", "utf8", "ascii"} else "hex" if isinstance(value, str) else None,
         "diagnostics": diagnostics,
     }
     if items is not None: output["items"] = items
@@ -927,10 +1403,32 @@ def _v2_public_field(field: dict[str, Any], result: dict[str, Any], *, value: An
     return output
 
 
+def _v2_resolve_nonnegative_length(expr: Any, values: dict[str, dict[str, Any]], budgets: dict[str, int], *, code: str = "length") -> tuple[str, int | None, list[dict[str, Any]]]:
+    """Evaluate a byte/item length without coercing floats or booleans."""
+    evaluated = _v2_eval_expr(expr, values, budgets)
+    if evaluated["status"] != "RESOLVED":
+        return evaluated["status"], None, evaluated.get("diagnostics", [])
+    raw = evaluated.get("value")
+    value = None if isinstance(raw, (bool, float)) else _v2_numeric(raw)
+    if value is None or value < 0:
+        return "INVALID", None, [_v2_diag("INVALID", code, "length must be a non-negative integer")]
+    return "RESOLVED", value, []
+
+
 def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | None, metadata: dict[str, Any], values: dict[str, dict[str, Any]], checked: dict[str, Any], depth: int = 0, store: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
     budgets = checked["budgets"]
+    if data is not None:
+        checked["_current_data_length"] = len(data)
+    runtime = checked.setdefault("_runtime", {"array_items": 0, "output_fields": 0})
+    if runtime.setdefault("output_fields", 0) >= budgets["max_output_fields"]:
+        result = _v2_status_result("LIMIT_EXCEEDED", diagnostics=[_v2_diag("LIMIT_EXCEEDED", "output_fields", "decoded field output exceeds the schema budget")])
+        return _v2_public_field(field, result, present=False), result
+    runtime["output_fields"] += 1
     if depth > budgets["max_nesting"]:
         result = _v2_status_result("LIMIT_EXCEEDED", diagnostics=[_v2_diag("LIMIT_EXCEEDED", "nesting", "nested structure exceeds the schema budget")])
+        return _v2_public_field(field, result, present=False), result
+    if data is not None and len(data) > budgets["max_bytes_per_packet"]:
+        result = _v2_status_result("LIMIT_EXCEEDED", diagnostics=[_v2_diag("LIMIT_EXCEEDED", "packet_bytes", "packet coordinate bytes exceed the schema budget")])
         return _v2_public_field(field, result, present=False), result
     presence = _v2_eval_expr(field.get("presence", True), values, budgets)
     if presence["status"] != "RESOLVED":
@@ -993,6 +1491,29 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
             output = _v2_public_field(field, result)
             if store: values[field["id"]] = result
             return output, result
+        explicit_length = None
+        if field.get("length") is not None:
+            length_status, explicit_length, length_diagnostics = _v2_resolve_nonnegative_length(field["length"], values, budgets)
+            if length_status != "RESOLVED" or explicit_length is None:
+                result = _v2_status_result(length_status, offset=absolute_offset, diagnostics=length_diagnostics)
+                output = _v2_public_field(field, result)
+                if store: values[field["id"]] = result
+                return output, result
+            if explicit_length > budgets["max_field_length"]:
+                result = _v2_status_result("LIMIT_EXCEEDED", offset=absolute_offset, length=explicit_length, diagnostics=[_v2_diag("LIMIT_EXCEEDED", "field_length", "field length exceeds the schema budget")])
+                output = _v2_public_field(field, result)
+                if store: values[field["id"]] = result
+                return output, result
+            if absolute_offset + explicit_length > budgets["max_bytes_per_packet"]:
+                result = _v2_status_result("LIMIT_EXCEEDED", offset=absolute_offset, length=explicit_length, diagnostics=[_v2_diag("LIMIT_EXCEEDED", "packet_budget", "field range exceeds the packet budget")])
+                output = _v2_public_field(field, result)
+                if store: values[field["id"]] = result
+                return output, result
+            if absolute_offset + explicit_length > len(data):
+                result = _v2_status_result("OUT_OF_BOUNDS", offset=absolute_offset, length=explicit_length, diagnostics=[_v2_diag("OUT_OF_BOUNDS", "truncated_field", "field range extends beyond captured bytes")])
+                output = _v2_public_field(field, result)
+                if store: values[field["id"]] = result
+                return output, result
         nested_values: dict[str, dict[str, Any]] = {}
         nested_outputs: list[dict[str, Any]] = []
         nested_end = absolute_offset
@@ -1006,13 +1527,6 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
             child_offset, child_length = child_result.get("offset"), child_result.get("length")
             if isinstance(child_offset, int) and isinstance(child_length, int):
                 nested_end = max(nested_end, child_offset + child_length)
-        explicit_length = None
-        if field.get("length") is not None:
-            length_result = _v2_eval_expr(field["length"], values, budgets)
-            if length_result["status"] != "RESOLVED":
-                nested_status = _v2_merge_status(nested_status, length_result["status"])
-            else:
-                explicit_length = _v2_numeric(length_result.get("value"))
         length = explicit_length if explicit_length is not None else max(0, nested_end - absolute_offset)
         if length > budgets["max_field_length"]: nested_status = _v2_merge_status(nested_status, "LIMIT_EXCEEDED")
         if absolute_offset + length > len(data): nested_status = _v2_merge_status(nested_status, "OUT_OF_BOUNDS")
@@ -1061,6 +1575,11 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
         return output, result
     status, public_value, internal, diagnostics = _v2_decode_value(data[absolute_offset:absolute_offset + length], field)
     result = _v2_status_result(status, value=public_value, internal=internal, diagnostics=diagnostics, offset=absolute_offset, length=length)
+    if status == "RESOLVED":
+        constraint_status, constraint_diagnostics = _v2_validate_field_constraints(field, result, values, checked)
+        result["diagnostics"].extend(constraint_diagnostics)
+        if constraint_status != "RESOLVED":
+            result["status"] = constraint_status
     output = _v2_public_field(field, result, value=public_value)
     if store: values[field["id"]] = result
     return output, result
@@ -1068,6 +1587,21 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
 
 def _v2_parse_array(field: dict[str, Any], array: dict[str, Any], absolute_offset: int, data: bytes, metadata: dict[str, Any], values: dict[str, dict[str, Any]], checked: dict[str, Any], depth: int) -> tuple[dict[str, Any], dict[str, Any]]:
     budgets = checked["budgets"]
+    declared_length = None
+    if field.get("length") is not None:
+        length_status, declared_length, length_diagnostics = _v2_resolve_nonnegative_length(field["length"], values, budgets)
+        if length_status != "RESOLVED" or declared_length is None:
+            result = _v2_status_result(length_status, offset=absolute_offset, diagnostics=length_diagnostics)
+            return _v2_public_field(field, result), result
+        if declared_length > budgets["max_field_length"]:
+            result = _v2_status_result("LIMIT_EXCEEDED", offset=absolute_offset, length=declared_length, diagnostics=[_v2_diag("LIMIT_EXCEEDED", "field_length", "field length exceeds the schema budget")])
+            return _v2_public_field(field, result), result
+        if absolute_offset + declared_length > budgets["max_bytes_per_packet"]:
+            result = _v2_status_result("LIMIT_EXCEEDED", offset=absolute_offset, length=declared_length, diagnostics=[_v2_diag("LIMIT_EXCEEDED", "packet_budget", "field range exceeds the packet budget")])
+            return _v2_public_field(field, result), result
+        if absolute_offset + declared_length > len(data):
+            result = _v2_status_result("OUT_OF_BOUNDS", offset=absolute_offset, length=declared_length, diagnostics=[_v2_diag("OUT_OF_BOUNDS", "truncated_field", "field range extends beyond captured bytes")])
+            return _v2_public_field(field, result), result
     count_result = _v2_eval_expr(array.get("count"), values, budgets)
     if count_result["status"] != "RESOLVED":
         result = _v2_status_result(count_result["status"], offset=absolute_offset, diagnostics=count_result.get("diagnostics", []))
@@ -1107,13 +1641,11 @@ def _v2_parse_array(field: dict[str, Any], array: dict[str, Any], absolute_offse
             status = _v2_merge_status(status, "OUT_OF_BOUNDS")
             break
     length = max(0, cursor - absolute_offset)
-    if field.get("length") is not None:
-        declared = _v2_eval_expr(field["length"], values, budgets)
-        if declared["status"] != "RESOLVED": status = _v2_merge_status(status, declared["status"])
+    if declared_length is not None:
+        if length > declared_length:
+            status = _v2_merge_status(status, "OUT_OF_BOUNDS")
         else:
-            declared_length = _v2_numeric(declared.get("value"))
-            if declared_length is not None and length > declared_length: status = _v2_merge_status(status, "OUT_OF_BOUNDS")
-            elif declared_length is not None: length = declared_length
+            length = declared_length
     result = _v2_status_result(status, value=public_values, internal=public_values, diagnostics=[] if status == "RESOLVED" else [_v2_diag(status, "array_status", "array contains a non-resolved element")], offset=absolute_offset, length=length)
     return _v2_public_field(field, result, value=public_values, items=items), result
 
@@ -1186,6 +1718,101 @@ def _v2_relationship_descriptors(checked: dict[str, Any]) -> list[tuple[str, str
     return result
 
 
+def _v2_relationship_dependency_status(result: dict[str, Any] | None) -> str:
+    """Map a field evaluation state without collapsing its meaning.
+
+    ``insufficient`` means captured bytes or a coordinate are unavailable;
+    ``unresolved`` means a reference/dependency cannot be determined; and
+    ``unsupported`` means the reviewed relationship cannot operate on the
+    decoded value or schema shape.
+    """
+    if result is None:
+        return "unresolved"
+    status = result.get("status")
+    if status in {"OUT_OF_BOUNDS", "UNAVAILABLE"}:
+        return "insufficient"
+    if status in {"UNKNOWN", "CYCLIC"}:
+        return "unresolved"
+    if status == "INVALID":
+        codes = {item.get("code") for item in result.get("diagnostics", []) if isinstance(item, dict)}
+        if codes & {"missing_reference", "missing_definition", "dependency_status"}:
+            return "unresolved"
+        return "unsupported"
+    if status == "LIMIT_EXCEEDED":
+        return "unsupported"
+    return "unresolved"
+
+
+def _v2_length_relationship(
+    descriptor_id: str,
+    descriptor: dict[str, Any],
+    *,
+    values: dict[str, dict[str, Any]],
+    field_map: dict[str, dict[str, Any]],
+    data_length: int,
+) -> dict[str, Any]:
+    """Validate a declarative length field against another decoded field."""
+    source_id = next((descriptor.get(key) for key in ("field_id", "length_field_id", "length_field", "source_field_id", "source", "field") if isinstance(descriptor.get(key), str)), None)
+    target_id = next((descriptor.get(key) for key in ("target_field_id", "target", "length_of", "target_field", "covers") if isinstance(descriptor.get(key), str)), None)
+    base = {
+        "id": descriptor_id, "kind": "length", "status": "unsupported",
+        "field_id": source_id, "target_field_id": target_id,
+        "expected": None, "actual": None, "diagnostics": [],
+    }
+    if source_id is None or target_id is None:
+        base["diagnostics"] = [_v2_diag("unsupported", "length_fields", "length relationship requires source and target field ids", relationship_id=descriptor_id)]
+        return base
+    if source_id not in field_map or target_id not in field_map:
+        base["status"] = "unresolved"
+        base["diagnostics"] = [_v2_diag("unresolved", "length_fields", "length relationship references an unknown field", relationship_id=descriptor_id, source=source_id, target=target_id)]
+        return base
+    if not _v2_is_integer_type(field_map[source_id].get("type")):
+        base["status"] = "unsupported"
+        base["diagnostics"] = [_v2_diag("unsupported", "length_value", "length relationship source field is not an integer type", relationship_id=descriptor_id, field_id=source_id)]
+        return base
+    source = values.get(source_id)
+    target = values.get(target_id)
+    if source is None or target is None:
+        base["status"] = "unresolved"
+        base["diagnostics"] = [_v2_diag("unresolved", "length_fields", "length relationship fields were not evaluated", relationship_id=descriptor_id)]
+        return base
+    for item, role in ((source, "source"), (target, "target")):
+        if item.get("status") != "RESOLVED":
+            mapped = _v2_relationship_dependency_status(item)
+            base["status"] = mapped
+            base["diagnostics"] = [_v2_diag(mapped, "length_dependency", f"length relationship {role} field is not resolved", relationship_id=descriptor_id, field_id=source_id if role == "source" else target_id)]
+            return base
+    if not isinstance(target.get("length"), int) or not isinstance(target.get("offset"), int):
+        base["status"] = "unresolved"
+        base["diagnostics"] = [_v2_diag("unresolved", "length_absent", "length relationship target has no concrete range", relationship_id=descriptor_id, field_id=target_id)]
+        return base
+    actual = _v2_constraint_number(source.get("internal"))
+    if actual is None:
+        base["status"] = "unsupported"
+        base["diagnostics"] = [_v2_diag("unsupported", "length_value", "length relationship source is not an integer", relationship_id=descriptor_id)]
+        return base
+    public_actual = _v2_public_integer(actual)
+    mode = str(descriptor.get("mode", descriptor.get("length_mode", "field"))).lower()
+    if mode in {"total", "through_end", "end"}:
+        expected = (target.get("offset") or 0) + (target.get("length") or 0)
+    elif mode in {"after", "bytes_after"}:
+        expected = data_length - (target.get("offset") or 0)
+    elif mode in {"payload", "field", "length", "body"}:
+        expected = target.get("length")
+    else:
+        base["diagnostics"] = [_v2_diag("unsupported", "length_mode", "length relationship mode is unsupported", relationship_id=descriptor_id, mode=mode)]
+        return base
+    adjustment = _v2_constraint_number(descriptor.get("adjust", descriptor.get("offset", 0)))
+    if adjustment is None:
+        base["diagnostics"] = [_v2_diag("unsupported", "length_adjustment", "length relationship adjustment must be an integer", relationship_id=descriptor_id)]
+        return base
+    expected = (expected or 0) + adjustment
+    base["expected"], base["actual"] = expected, public_actual
+    base["status"] = "valid" if actual == expected else "invalid"
+    base["diagnostics"] = [_v2_diag(base["status"], "length_valid" if actual == expected else "length_mismatch", "length matches the related field" if actual == expected else "length does not match the related field", relationship_id=descriptor_id, expected=expected, actual=public_actual)]
+    return base
+
+
 def _v2_relationship_target_id(descriptor: dict[str, Any], owner_id: str | None) -> str | None:
     for key in ("checksum_field", "checksum_field_id", "target_field", "target_field_id", "field_id", "target", "field"):
         value = descriptor.get(key)
@@ -1233,12 +1860,14 @@ def _v2_eval_checksum_integer(value: Any, values: dict[str, dict[str, Any]], bud
             numeric = _v2_numeric(evaluated.get("value"))
             if numeric is not None and not isinstance(evaluated.get("value"), bool):
                 return "resolved", numeric, ""
-        if any(item.get("code") in {"missing_reference", "dependency_status"} for item in evaluated.get("diagnostics", [])):
-            if evaluated.get("status") in {"OUT_OF_BOUNDS", "UNAVAILABLE"}:
-                return "insufficient", None, "range coordinate depends on incomplete field data"
+        status = evaluated.get("status")
+        codes = {item.get("code") for item in evaluated.get("diagnostics", []) if isinstance(item, dict)}
+        if "missing_reference" in codes or status in {"UNKNOWN", "CYCLIC"}:
             return "unresolved", None, "range coordinate depends on an unresolved field"
-        if evaluated.get("status") in {"UNKNOWN", "CYCLIC"}:
-            return "unresolved", None, "range coordinate is unresolved"
+        if status in {"OUT_OF_BOUNDS", "UNAVAILABLE"}:
+            return "insufficient", None, "range coordinate depends on incomplete field data"
+        if "dependency_status" in codes:
+            return _v2_relationship_dependency_status({"status": status, "diagnostics": evaluated.get("diagnostics", [])}), None, "range coordinate depends on an unsupported field"
     return "unsupported", None, "range coordinate must be a bounded integer or field expression"
 
 
@@ -1409,9 +2038,8 @@ def _v2_checksum_location(
             return "unresolved", None, f"checksum field {selected_target!r} does not exist", selected_target
         target_status = target.get("status")
         if target_status != "RESOLVED":
-            if target_status in {"OUT_OF_BOUNDS", "UNAVAILABLE", "UNKNOWN"}:
-                return "insufficient", None, f"checksum field {selected_target!r} is incomplete", selected_target
-            return "unresolved", None, f"checksum field {selected_target!r} is not resolved", selected_target
+            relationship_status = _v2_relationship_dependency_status(target)
+            return relationship_status, None, f"checksum field {selected_target!r} is not resolved", selected_target
         start, target_length = target.get("offset"), target.get("length")
         if not isinstance(start, int) or not isinstance(target_length, int):
             return "unresolved", None, f"checksum field {selected_target!r} has no concrete location", selected_target
@@ -1580,7 +2208,7 @@ def _v2_apply_checksum_relationship(
 
 
 def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
-    checked["_runtime"] = {"array_items": 0}
+    checked["_runtime"] = {"array_items": 0, "output_fields": 0}
     values: dict[str, dict[str, Any]] = {}
     records: dict[str, dict[str, Any]] = {}
     field_outputs: dict[str, dict[str, Any]] = {}
@@ -1625,13 +2253,27 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
     coordinate_cache: dict[str, tuple[bytes | None, dict[str, Any]]] = {}
     relationship_results: list[dict[str, Any]] = []
     for relationship_id, owner_id, descriptor in _v2_relationship_descriptors(checked):
-        relationship = _v2_apply_checksum_relationship(
-            relationship_id, owner_id, descriptor, packet=packet, checked=checked,
-            values=values, field_map=field_map, coordinate_cache=coordinate_cache,
-        )
+        relationship_kind = str(descriptor.get("kind", "checksum")).lower()
+        if relationship_kind in {"length", "length_relationship", "size"}:
+            if owner_id is not None and not any(key in descriptor for key in ("field_id", "length_field_id", "length_field", "source_field_id", "source", "field")):
+                descriptor = {**descriptor, "field_id": owner_id}
+            source_id = next((descriptor.get(key) for key in ("field_id", "length_field_id", "length_field", "source_field_id", "source", "field") if isinstance(descriptor.get(key), str)), owner_id)
+            coordinate_system = descriptor.get("coordinate_system") or (field_map.get(source_id or "", {}).get("coordinate_system")) or checked["coordinate_system"]
+            if coordinate_system not in coordinate_cache:
+                coordinate_cache[coordinate_system] = coordinate_bytes(packet, coordinate_system)
+            relation_data, relation_metadata = coordinate_cache[coordinate_system]
+            relationship = _v2_length_relationship(
+                relationship_id, descriptor, values=values, field_map=field_map,
+                data_length=len(relation_data) if relation_data is not None and relation_metadata.get("available") else 0,
+            )
+        else:
+            relationship = _v2_apply_checksum_relationship(
+                relationship_id, owner_id, descriptor, packet=packet, checked=checked,
+                values=values, field_map=field_map, coordinate_cache=coordinate_cache,
+            )
         relationship_results.append(relationship)
         diagnostics.extend(relationship.get("diagnostics", []))
-        target_id = relationship.get("checksum_field_id") or owner_id
+        target_id = relationship.get("checksum_field_id") or relationship.get("field_id") or owner_id
         if target_id in field_outputs:
             target_output = field_outputs[target_id]
             target_output.setdefault("checksum_diagnostics", []).append(relationship)
@@ -1654,6 +2296,8 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
 
 def _apply_schema_v2(schema: dict[str, Any], packets: Iterable[Packet], max_packets: int = 100_000) -> dict[str, Any]:
     checked = _validate_schema_v2(schema)
+    if isinstance(max_packets, bool) or not isinstance(max_packets, int) or max_packets <= 0:
+        raise ValueError("packet count exceeds schema application limit")
     packet_limit = min(max_packets, checked["budgets"]["max_packets"])
     if packet_limit <= 0:
         raise ValueError("packet count exceeds schema application limit")
@@ -1763,7 +2407,7 @@ def migrate_schema(schema: dict[str, Any]) -> dict[str, Any]:
             "description": "Migrated from Schema V1 fixed-range field.",
             "type": field["type"].lower(), "offset": field["offset"], "length": field["width"],
             "endian": field["endian"], "coordinate_system": field["coordinate_system"],
-            "constraints": field.get("constraints", {}),
+            "constraints": field.get("constraints", {}) if isinstance(field.get("constraints", {}), dict) else {},
             "metadata": {"origin": field.get("origin"), "review_status": field.get("review_status"), "evidence_refs": field.get("evidence_refs", []), "known_limitations": field.get("known_limitations", [])},
         })
     return _validate_schema_v2({

@@ -22,7 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     analyze = subparsers.add_parser("analyze", help="analyze a packet file")
     analyze.add_argument("input", type=Path)
-    analyze.add_argument("--format", choices=("auto", "bin", "hex", "pcap", "pcapng"), default="auto")
+    capture_formats = (
+        "auto", "bin", "hex", "pcap", "pcapng", "jsonl",
+        "uart", "uart-lines", "can", "can-lines",
+    )
+    analyze.add_argument("--format", choices=capture_formats, default="auto")
     analyze.add_argument("--pretty", action="store_true")
     analyze.add_argument("--raw", action="store_true", help="analyze raw packet bytes instead of decoded application payloads")
     analyze.add_argument("--direction", choices=("both", "forward", "reverse"), default="both",
@@ -32,8 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     compare = subparsers.add_parser("compare", help="compare a baseline capture with a controlled-change capture")
     compare.add_argument("baseline", type=Path)
     compare.add_argument("changed", type=Path)
-    compare.add_argument("--baseline-format", choices=("auto", "bin", "hex", "pcap", "pcapng"), default="auto")
-    compare.add_argument("--changed-format", choices=("auto", "bin", "hex", "pcap", "pcapng"), default="auto")
+    compare.add_argument("--baseline-format", choices=capture_formats, default="auto")
+    compare.add_argument("--changed-format", choices=capture_formats, default="auto")
     compare.add_argument("--raw", action="store_true", help="compare raw packet bytes instead of decoded application payloads")
     compare.add_argument("--change-label", default="controlled change")
     compare.add_argument("--pretty", action="store_true")

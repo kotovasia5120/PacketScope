@@ -1,4 +1,5 @@
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,22 @@ class CliTests(unittest.TestCase):
             with patch("packetscope.cli.Limits", return_value=Limits(max_input_bytes=3)):
                 with self.assertRaises(InputLimitError):
                     main(["analyze", str(path), "--format", "bin"])
+
+    def test_normalized_jsonl_uses_existing_cli_analysis_path(self):
+        payload = (
+            b'{"timestamp":1,"direction":"rx","source":"uart0",'
+            b'"raw":"AA=="}\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.jsonl"
+            path.write_bytes(payload)
+            output = io.StringIO()
+            with patch("sys.stdout", output):
+                self.assertEqual(main(["analyze", str(path), "--format", "auto"]), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["source"]["format"], "jsonl")
+        self.assertEqual(result["packets"][0]["direction"], "rx")
+        self.assertEqual(result["packets"][0]["source_identity"], "uart0")
 
 
 if __name__ == "__main__":
