@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from packetscope.cli import main
-from packetscope.experiments import compare_controlled_change
+from packetscope.experiments import ExperimentCancelled, compare_controlled_change
 from packetscope.models import Limits, Packet
 
 
@@ -45,6 +45,37 @@ class ExperimentComparisonTests(unittest.TestCase):
             report = json.loads(output.read_text())
             self.assertEqual(report["correlated_ranges"][0]["offset"], 1)
             self.assertEqual(report["baseline"]["format"], "bin")
+
+    def test_comparison_progress_is_bounded_and_cancellable(self):
+        progress = []
+        cancelled = False
+
+        def report(value):
+            nonlocal cancelled
+            progress.append(value)
+            if value >= 35:
+                cancelled = True
+
+        with self.assertRaises(ExperimentCancelled):
+            compare_controlled_change(
+                [Packet(index, bytes(range(256))) for index in range(2)],
+                [Packet(index + 10, bytes(range(255, -1, -1))) for index in range(2)],
+                progress=report,
+                cancel=lambda: cancelled,
+            )
+        self.assertTrue(progress)
+        self.assertEqual(progress[0], 0)
+        self.assertTrue(all(0 <= value <= 95 for value in progress))
+        self.assertEqual(progress, sorted(progress))
+
+    def test_unequal_capture_counts_keep_unpaired_evidence_limit(self):
+        report = compare_controlled_change(
+            [Packet(0, b"\x01\x10"), Packet(1, b"\x01\x11")],
+            [Packet(2, b"\x01\x20")],
+        )
+        self.assertEqual(report["pairing"]["paired_messages"], 1)
+        self.assertEqual(report["pairing"]["unpaired_baseline_messages"], 1)
+        self.assertTrue(any("different packet counts" in item for item in report["limitations"]))
 
 
 if __name__ == "__main__":

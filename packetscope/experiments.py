@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from typing import Iterable
+from typing import Callable, Iterable
 
 from packetscope.errors import InputLimitError
 from packetscope.models import Limits, Packet
@@ -19,6 +19,10 @@ from packetscope.protocols import coordinate_bytes
 MAX_EVIDENCE_PAIRS = 32
 
 
+class ExperimentCancelled(Exception):
+    """Internal cooperative cancellation signal for bounded comparisons."""
+
+
 def compare_controlled_change(
     baseline: Iterable[Packet],
     changed: Iterable[Packet],
@@ -26,23 +30,37 @@ def compare_controlled_change(
     limits: Limits | None = None,
     analyze_raw: bool = False,
     change_label: str = "controlled change",
+    cancel: Callable[[], bool] | None = None,
+    progress: Callable[[int], None] | None = None,
 ) -> dict:
     """Compare two captures while retaining uncertainty and bounded evidence."""
 
     limits = limits or Limits()
-    baseline_packets = _bounded_packets(baseline, limits)
-    changed_packets = _bounded_packets(changed, limits)
+    _report_progress(progress, 0)
+    baseline_packets = _bounded_packets(baseline, limits, cancel=cancel)
+    _report_progress(progress, 18)
+    changed_packets = _bounded_packets(changed, limits, cancel=cancel)
+    _report_progress(progress, 35)
     coordinate_system = "raw_packet" if analyze_raw else "application_payload"
-    baseline_views, baseline_unavailable = _views(baseline_packets, coordinate_system)
-    changed_views, changed_unavailable = _views(changed_packets, coordinate_system)
+    baseline_views, baseline_unavailable = _views(baseline_packets, coordinate_system, cancel=cancel)
+    changed_views, changed_unavailable = _views(changed_packets, coordinate_system, cancel=cancel)
 
     pair_count = min(len(baseline_views), len(changed_views))
     records: dict[int, dict] = {}
+    total_positions = sum(
+        min(len(left), len(right))
+        for (_left_packet, left), (_right_packet, right)
+        in zip(baseline_views[:pair_count], changed_views[:pair_count])
+    )
+    visited_positions = 0
     for pair_index in range(pair_count):
+        _check_cancel(cancel)
         left_packet, left = baseline_views[pair_index]
         right_packet, right = changed_views[pair_index]
         width = min(len(left), len(right))
         for offset in range(width):
+            if offset % 256 == 0:
+                _check_cancel(cancel)
             record = records.setdefault(offset, {"changed": 0, "compared": 0, "evidence": []})
             record["compared"] += 1
             if left[offset] != right[offset]:
@@ -55,7 +73,11 @@ def compare_controlled_change(
                         "baseline_byte": f"{left[offset]:02x}",
                         "changed_byte": f"{right[offset]:02x}",
                     })
+            visited_positions += 1
+        if total_positions:
+            _report_progress(progress, 35 + int(60 * visited_positions / total_positions))
 
+    _check_cancel(cancel)
     ranges = _changed_ranges(records, limits)
     hypotheses = [_range_hypothesis(item, change_label, coordinate_system) for item in ranges[: limits.max_hypotheses]]
     limitations: list[str] = [
@@ -69,6 +91,7 @@ def compare_controlled_change(
     if not hypotheses:
         limitations.append("No consistently changing byte range was observed in the comparable payloads.")
 
+    _report_progress(progress, 95)
     return {
         "schema_version": 1,
         "comparison_type": "controlled_change",
@@ -97,10 +120,16 @@ def compare_controlled_change(
     }
 
 
-def _bounded_packets(packets: Iterable[Packet], limits: Limits) -> list[Packet]:
+def _bounded_packets(
+    packets: Iterable[Packet],
+    limits: Limits,
+    *,
+    cancel: Callable[[], bool] | None = None,
+) -> list[Packet]:
     result: list[Packet] = []
     total = 0
     for packet in packets:
+        _check_cancel(cancel)
         if len(result) >= limits.max_packets:
             raise InputLimitError(f"packet count exceeds limit {limits.max_packets}")
         if len(packet.payload) > limits.max_packet_bytes:
@@ -112,16 +141,32 @@ def _bounded_packets(packets: Iterable[Packet], limits: Limits) -> list[Packet]:
     return result
 
 
-def _views(packets: list[Packet], coordinate_system: str) -> tuple[list[tuple[Packet, bytes]], int]:
+def _views(
+    packets: list[Packet],
+    coordinate_system: str,
+    *,
+    cancel: Callable[[], bool] | None = None,
+) -> tuple[list[tuple[Packet, bytes]], int]:
     views: list[tuple[Packet, bytes]] = []
     unavailable = 0
     for packet in packets:
+        _check_cancel(cancel)
         data, metadata = coordinate_bytes(packet, coordinate_system)
         if data is None or not metadata.get("available"):
             unavailable += 1
             continue
         views.append((packet, data))
     return views, unavailable
+
+
+def _check_cancel(cancel: Callable[[], bool] | None) -> None:
+    if cancel is not None and cancel():
+        raise ExperimentCancelled()
+
+
+def _report_progress(progress: Callable[[int], None] | None, value: int) -> None:
+    if progress is not None:
+        progress(max(0, min(95, int(value))))
 
 
 def _capture_summary(packets: list[Packet], unavailable: int) -> dict:

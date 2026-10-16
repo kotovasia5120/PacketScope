@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+import hashlib
 import json
 import queue
 import threading
@@ -16,6 +17,8 @@ import uuid
 from typing import Any, Callable
 
 from packetscope.analysis import analyze_packets
+from packetscope.experiments import ExperimentCancelled, compare_controlled_change
+from packetscope.flows import group_flows, normalize_direction, select_flow_packets
 from packetscope.importers import import_bytes
 from packetscope.models import Limits
 
@@ -37,6 +40,31 @@ class AnalysisJob:
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
+@dataclass
+class ControlledExperimentJob:
+    job_id: str
+    baseline_name: str
+    baseline_format: str
+    baseline_payload: bytes
+    changed_name: str
+    changed_format: str
+    changed_payload: bytes
+    analyze_raw: bool
+    baseline_direction: str = "both"
+    changed_direction: str = "both"
+    baseline_flow_id: str | None = None
+    changed_flow_id: str | None = None
+    change_label: str = "controlled change"
+    baseline_raw_sha256: str = ""
+    changed_raw_sha256: str = ""
+    created_at: float = field(default_factory=time.monotonic)
+    status: str = "QUEUED"
+    progress: int = 0
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+
+
 class AnalysisManager:
     _TERMINAL = frozenset({"COMPLETE", "FAILED", "CANCELLED"})
 
@@ -48,6 +76,7 @@ class AnalysisManager:
         retention_seconds: float = 120.0,
         importer: Callable[..., Any] | None = None,
         analyzer: Callable[..., dict[str, Any]] | None = None,
+        experimenter: Callable[..., dict[str, Any]] | None = None,
     ):
         if max_queue <= 0:
             raise ValueError("max_queue must be positive")
@@ -55,6 +84,7 @@ class AnalysisManager:
         self.retention_seconds = retention_seconds
         self._importer = importer or import_bytes
         self._analyzer = analyzer or analyze_packets
+        self._experimenter = experimenter or compare_controlled_change
         self._jobs: dict[str, AnalysisJob] = {}
         self._retained_payload_bytes = 0
         self._queue: queue.Queue[AnalysisJob] = queue.Queue(maxsize=max_queue)
@@ -88,6 +118,64 @@ class AnalysisManager:
                 raise RuntimeError("job payload retention limit reached")
             # Enqueue and publish while holding the same lock.  This prevents
             # close() from stopping the worker between those two operations.
+            try:
+                self._queue.put_nowait(job)
+            except queue.Full:
+                raise RuntimeError("analysis queue is full") from None
+            self._jobs[job.job_id] = job
+            self._retained_payload_bytes += payload_size
+        return job
+
+    def submit_controlled_experiment(
+        self,
+        baseline_name: str,
+        baseline_format: str,
+        baseline_payload: bytes,
+        changed_name: str,
+        changed_format: str,
+        changed_payload: bytes,
+        analyze_raw: bool,
+        *,
+        baseline_direction: str = "both",
+        changed_direction: str = "both",
+        baseline_flow_id: str | None = None,
+        changed_flow_id: str | None = None,
+        change_label: str = "controlled change",
+    ) -> ControlledExperimentJob:
+        baseline_direction = normalize_direction(baseline_direction)
+        changed_direction = normalize_direction(changed_direction)
+        baseline_name = baseline_name[:200]
+        changed_name = changed_name[:200]
+        baseline_payload = bytes(baseline_payload)
+        changed_payload = bytes(changed_payload)
+        job = ControlledExperimentJob(
+            uuid.uuid4().hex,
+            baseline_name,
+            baseline_format,
+            baseline_payload,
+            changed_name,
+            changed_format,
+            changed_payload,
+            analyze_raw,
+            baseline_direction,
+            changed_direction,
+            baseline_flow_id,
+            changed_flow_id,
+            str(change_label)[:120] or "controlled change",
+            hashlib.sha256(baseline_payload).hexdigest(),
+            hashlib.sha256(changed_payload).hexdigest(),
+        )
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("analysis manager is closed")
+            self._cleanup_locked()
+            if len(self._jobs) >= self.limits.max_retained_jobs:
+                raise RuntimeError("job retention limit reached")
+            payload_size = len(baseline_payload) + len(changed_payload)
+            if payload_size > self.limits.max_job_payload_bytes:
+                raise RuntimeError("job payload exceeds retention limit")
+            if self._retained_payload_bytes + payload_size > self.limits.max_job_payload_bytes:
+                raise RuntimeError("job payload retention limit reached")
             try:
                 self._queue.put_nowait(job)
             except queue.Full:
@@ -151,61 +239,10 @@ class AnalysisManager:
                         continue
                     job.status = "IMPORTING"
                     job.progress = 5
-
-                input_size = len(job.payload)
-                try:
-                    imported = self._importer(job.name, job.payload, job.format_name, self.limits)
-                except Exception:
-                    with self._lock:
-                        self._release_payload_locked(job)
-                    raise
-                with self._lock:
-                    self._release_payload_locked(job)
-                    if job.cancel_event.is_set() or job.status in self._TERMINAL:
-                        self._mark_cancelled_locked(job)
-                        continue
-                    job.status = "ANALYZING"
-                    job.progress = max(job.progress, 10)
-
-                def progress(value: int) -> None:
-                    with self._lock:
-                        if job.status != "ANALYZING" or job.cancel_event.is_set():
-                            return
-                        # The analyzer reports packet count; map it into the
-                        # analysis half without trusting unbounded input.
-                        job.progress = max(job.progress, min(95, 10 + min(85, int(value))))
-
-                result = self._analyzer(
-                    imported.packets,
-                    limits=self.limits,
-                    analyze_raw=job.analyze_raw,
-                    selected_direction=job.selected_direction,
-                    flow_id=job.flow_id,
-                    cancel=job.cancel_event.is_set,
-                    progress=progress,
-                )
-                result = dict(result)
-                result["source"] = {
-                    "name": job.name,
-                    "format": imported.format,
-                    "packet_count": len(imported.packets),
-                    "byte_count": input_size,
-                }
-                result["warnings"] = _merge_warnings(result.get("warnings", []), imported.warnings)
-                if len(json.dumps(result, sort_keys=True, separators=(",", ":"))) > self.limits.max_response_bytes:
-                    raise ValueError("analysis result exceeds response limit")
-                with self._lock:
-                    # Cancellation and completion are one atomic decision.
-                    # In particular, do not let a late cancel resurrect as a
-                    # successful result.
-                    if job.cancel_event.is_set() or result.get("status") == "CANCELLED":
-                        self._mark_cancelled_locked(job)
-                        continue
-                    if job.status in self._TERMINAL:
-                        continue
-                    job.result = result
-                    job.progress = 100
-                    job.status = "COMPLETE"
+                if isinstance(job, ControlledExperimentJob):
+                    self._run_experiment(job)
+                else:
+                    self._run_analysis(job)
             except Exception as exc:  # public error is bounded and payload-free
                 with self._lock:
                     if job.status in self._TERMINAL:
@@ -218,6 +255,145 @@ class AnalysisManager:
             finally:
                 self._queue.task_done()
 
+    def _run_analysis(self, job: AnalysisJob) -> None:
+        input_size = len(job.payload)
+        try:
+            imported = self._importer(job.name, job.payload, job.format_name, self.limits)
+        except Exception:
+            with self._lock:
+                self._release_payload_locked(job)
+            raise
+        with self._lock:
+            self._release_payload_locked(job)
+            if job.cancel_event.is_set() or job.status in self._TERMINAL:
+                self._mark_cancelled_locked(job)
+                return
+            job.status = "ANALYZING"
+            job.progress = max(job.progress, 10)
+
+        def progress(value: int) -> None:
+            with self._lock:
+                if job.status != "ANALYZING" or job.cancel_event.is_set():
+                    return
+                job.progress = max(job.progress, min(95, 10 + min(85, int(value))))
+
+        result = self._analyzer(
+            imported.packets,
+            limits=self.limits,
+            analyze_raw=job.analyze_raw,
+            selected_direction=job.selected_direction,
+            flow_id=job.flow_id,
+            cancel=job.cancel_event.is_set,
+            progress=progress,
+        )
+        result = dict(result)
+        result["source"] = {
+            "name": job.name,
+            "format": imported.format,
+            "packet_count": len(imported.packets),
+            "byte_count": input_size,
+        }
+        result["warnings"] = _merge_warnings(result.get("warnings", []), imported.warnings)
+        self._publish_result(job, result)
+
+    def _run_experiment(self, job: ControlledExperimentJob) -> None:
+        baseline_size = len(job.baseline_payload)
+        changed_size = len(job.changed_payload)
+        try:
+            baseline = self._importer(job.baseline_name, job.baseline_payload, job.baseline_format, self.limits)
+        except Exception:
+            with self._lock:
+                self._release_payload_locked(job)
+            raise
+        with self._lock:
+            self._release_experiment_payload_locked(job, baseline=True)
+        if job.cancel_event.is_set():
+            with self._lock:
+                self._mark_cancelled_locked(job)
+            return
+        with self._lock:
+            job.progress = max(job.progress, 22)
+        try:
+            changed = self._importer(job.changed_name, job.changed_payload, job.changed_format, self.limits)
+        except Exception:
+            with self._lock:
+                self._release_payload_locked(job)
+            raise
+        with self._lock:
+            self._release_experiment_payload_locked(job, baseline=False)
+        if job.cancel_event.is_set():
+            with self._lock:
+                self._mark_cancelled_locked(job)
+            return
+
+        baseline_packets = _select_packets(baseline.packets, job.baseline_direction, job.baseline_flow_id, self.limits)
+        changed_packets = _select_packets(changed.packets, job.changed_direction, job.changed_flow_id, self.limits)
+        with self._lock:
+            job.status = "ANALYZING"
+            job.progress = max(job.progress, 35)
+
+        def progress(value: int) -> None:
+            with self._lock:
+                if job.status != "ANALYZING" or job.cancel_event.is_set():
+                    return
+                job.progress = max(job.progress, min(95, int(value)))
+
+        result = dict(self._experimenter(
+            baseline_packets,
+            changed_packets,
+            limits=self.limits,
+            analyze_raw=job.analyze_raw,
+            change_label=job.change_label,
+            cancel=job.cancel_event.is_set,
+            progress=progress,
+        ))
+        result["baseline"].update({
+            "name": job.baseline_name,
+            "format": baseline.format,
+            "byte_count": baseline_size,
+            "raw_sha256": job.baseline_raw_sha256,
+        })
+        result["changed"].update({
+            "name": job.changed_name,
+            "format": changed.format,
+            "byte_count": changed_size,
+            "raw_sha256": job.changed_raw_sha256,
+        })
+        result["selection"] = {
+            "baseline_flow_id": job.baseline_flow_id,
+            "changed_flow_id": job.changed_flow_id,
+            "baseline_direction": job.baseline_direction,
+            "changed_direction": job.changed_direction,
+            "independent_scopes": True,
+        }
+        result["provenance"] = {
+            "operation": "controlled_experiment",
+            "tool": {"name": "PacketScope", "version": "0.2.0"},
+            "coordinate_system": result.get("coordinate_system"),
+            "analyze_raw": job.analyze_raw,
+            "baseline_raw_sha256": job.baseline_raw_sha256,
+            "changed_raw_sha256": job.changed_raw_sha256,
+        }
+        result["warnings"] = _merge_warnings(
+            [],
+            [{"source": "baseline_importer", "message": warning} for warning in baseline.warnings]
+            + [{"source": "changed_importer", "message": warning} for warning in changed.warnings],
+        )
+        self._publish_result(job, result)
+
+    def _publish_result(self, job: AnalysisJob | ControlledExperimentJob, result: dict[str, Any]) -> None:
+        if len(json.dumps(result, sort_keys=True, separators=(",", ":"))) > self.limits.max_response_bytes:
+            raise ValueError("analysis result exceeds response limit")
+        with self._lock:
+            if job.cancel_event.is_set() or result.get("status") == "CANCELLED":
+                self._mark_cancelled_locked(job)
+                return
+            if job.status in self._TERMINAL:
+                return
+            job.result = result
+            job.progress = 100
+            job.status = "COMPLETE"
+
     def _mark_cancelled_locked(self, job: AnalysisJob) -> None:
         if job.status in {"COMPLETE", "FAILED"}:
             return
@@ -227,11 +403,22 @@ class AnalysisManager:
         job.error = None
         self._release_payload_locked(job)
 
-    def _release_payload_locked(self, job: AnalysisJob) -> None:
+    def _release_payload_locked(self, job: AnalysisJob | ControlledExperimentJob) -> None:
+        if isinstance(job, ControlledExperimentJob):
+            self._release_experiment_payload_locked(job, baseline=True)
+            self._release_experiment_payload_locked(job, baseline=False)
+            return
         if not job.payload:
             return
         self._retained_payload_bytes -= len(job.payload)
         job.payload = b""
+
+    def _release_experiment_payload_locked(self, job: ControlledExperimentJob, *, baseline: bool) -> None:
+        attribute = "baseline_payload" if baseline else "changed_payload"
+        payload = getattr(job, attribute)
+        if payload:
+            self._retained_payload_bytes -= len(payload)
+            setattr(job, attribute, b"")
 
     def _cleanup_locked(self) -> None:
         now = time.monotonic()
@@ -267,3 +454,17 @@ def _merge_warnings(analyzer: list[Any], importer: list[str]) -> list[dict[str, 
             values.append({"source": "analyzer", "message": str(warning)})
     values.extend({"source": "importer", "message": str(warning)} for warning in importer)
     return sorted(values, key=lambda item: (item["source"], item["message"]))
+
+
+def _select_packets(packets: list[Any], direction: str, flow_id: str | None, limits: Limits) -> list[Any]:
+    """Apply one independently validated experiment scope without trusting client bytes."""
+    if flow_id is not None:
+        flows = group_flows(packets, limits=limits)
+        if not any(flow.flow_id == flow_id for flow in flows):
+            raise ValueError("experiment flow selection is unavailable")
+    return select_flow_packets(
+        packets,
+        selected_direction=direction,
+        flow_id=flow_id,
+        limits=limits,
+    )

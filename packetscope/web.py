@@ -24,7 +24,7 @@ from packetscope.importers import import_bytes
 from packetscope.models import Limits
 from packetscope.demo import demo_capture, demo_corpus
 from packetscope.evaluation import evaluate_result
-from packetscope.flows import normalize_direction
+from packetscope.flows import flows_as_dict, group_flows, normalize_direction
 from packetscope.jobs import AnalysisManager
 
 
@@ -96,6 +96,16 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             }
             self._json(HTTPStatus.OK, result)
             return
+        if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/report"):
+            job_id = parsed.path.removeprefix("/api/jobs/").removesuffix("/report").strip("/")
+            status = self.server.analysis_manager.get(job_id)  # type: ignore[attr-defined]
+            if status is None:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "job not found"})
+            elif status.get("status") != "COMPLETE" or not isinstance(status.get("result"), dict):
+                self._json(HTTPStatus.CONFLICT, {"error": "experiment report is not complete"})
+            else:
+                self._report_download(job_id, status["result"])
+            return
         if parsed.path.startswith("/api/jobs/"):
             job_id = parsed.path.removeprefix("/api/jobs/").split("/", 1)[0]
             status = self.server.analysis_manager.get(job_id)  # type: ignore[attr-defined]
@@ -115,6 +125,12 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/jobs":
             self._submit_job()
+            return
+        if self.path == "/api/experiments/prepare":
+            self._prepare_experiment()
+            return
+        if self.path == "/api/experiments":
+            self._submit_experiment()
             return
         if self.path != "/api/analyze":
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -216,6 +232,110 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "capture exceeds available processing budget"})
         except Exception:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid capture"})
+
+    def _prepare_experiment(self) -> None:
+        parsed = self._read_experiment_request()
+        if parsed is None:
+            return
+        baseline, changed = parsed["baseline"], parsed["changed"]
+        try:
+            if len(baseline["payload"]) + len(changed["payload"]) > self.server.limits.max_job_payload_bytes:  # type: ignore[attr-defined]
+                raise InputLimitError("experiment payload exceeds retention limit")
+            baseline_imported = import_bytes(
+                baseline["name"], baseline["payload"], baseline["format"], self.server.limits  # type: ignore[attr-defined]
+            )
+            changed_imported = import_bytes(
+                changed["name"], changed["payload"], changed["format"], self.server.limits  # type: ignore[attr-defined]
+            )
+            self._json(HTTPStatus.OK, {
+                "baseline": _experiment_source(
+                    baseline, baseline_imported, len(baseline["payload"]),
+                    flows_as_dict(group_flows(baseline_imported.packets, limits=self.server.limits)),  # type: ignore[attr-defined]
+                ),
+                "changed": _experiment_source(
+                    changed, changed_imported, len(changed["payload"]),
+                    flows_as_dict(group_flows(changed_imported.packets, limits=self.server.limits)),  # type: ignore[attr-defined]
+                ),
+            })
+        except PacketScopeError as exc:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE if isinstance(exc, InputLimitError) else HTTPStatus.BAD_REQUEST,
+                       {"error": _safe_capture_error(exc)})
+        except (ValueError, UnicodeDecodeError, struct.error, IndexError, OverflowError, RecursionError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid experiment capture"})
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "capture exceeds available processing budget"})
+        except Exception:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid experiment capture"})
+
+    def _submit_experiment(self) -> None:
+        parsed = self._read_experiment_request()
+        if parsed is None:
+            return
+        baseline, changed = parsed["baseline"], parsed["changed"]
+        try:
+            job = self.server.analysis_manager.submit_controlled_experiment(  # type: ignore[attr-defined]
+                baseline["name"], baseline["format"], baseline["payload"],
+                changed["name"], changed["format"], changed["payload"], parsed["raw"],
+                baseline_direction=baseline["direction"],
+                changed_direction=changed["direction"],
+                baseline_flow_id=baseline["flow_id"],
+                changed_flow_id=changed["flow_id"],
+                change_label=parsed["change_label"],
+            )
+            self._json(HTTPStatus.ACCEPTED, {
+                "job_id": job.job_id,
+                "operation": "controlled_experiment",
+                "status": job.status,
+                "progress": job.progress,
+                "report_url": f"/api/jobs/{job.job_id}/report",
+            })
+        except (ValueError, PacketScopeError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if "payload" in message or "retention" in message:
+                self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "experiment exceeds the retained-job payload budget"})
+            else:
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "analysis service is busy"})
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "capture exceeds available processing budget"})
+        except Exception:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid experiment capture"})
+
+    def _read_experiment_request(self) -> dict | None:
+        content_length = self._content_length()
+        if content_length is None:
+            self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return None
+        if content_length < 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid"})
+            return None
+        if content_length > self.server.limits.max_input_bytes:  # type: ignore[attr-defined]
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds size limit"})
+            return None
+        body = self._read_body(content_length)
+        if body is None:
+            return None
+        if len(body) != content_length:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
+            return None
+        try:
+            return _multipart_experiment(self.headers.get("Content-Type", ""), body)
+        except ValueError as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
+            return None
+
+    def _report_download(self, job_id: str, result: dict) -> None:
+        payload = dumps_result(result).encode("utf-8")
+        if len(payload) > self.server.limits.max_response_bytes:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "report exceeds configured response limit"})
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="packetscope-experiment-{job_id}.json"')
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def log_message(self, _format: str, *_args: object) -> None:
         # Captures can contain secrets; the local server intentionally stays quiet.
@@ -551,6 +671,122 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bo
             raise ValueError("multipart file payload is invalid")
         return filename[:200], requested_format, payload, analyze_raw, selected_direction, flow_id
     raise ValueError("multipart field 'file' is required")
+
+
+def _multipart_experiment(content_type: str, body: bytes) -> dict:
+    """Parse two bounded capture parts without accepting client-side results."""
+    if any(character in content_type for character in "\r\n") or len(content_type) > 1024:
+        raise ValueError("invalid multipart content type")
+    if not content_type.lower().startswith("multipart/form-data"):
+        raise ValueError("Content-Type must be multipart/form-data")
+    message = BytesParser(policy=policy.default).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode() + body
+    )
+    if not message.is_multipart():
+        raise ValueError("invalid multipart body")
+    captures: dict[str, dict] = {}
+    values = {
+        "baseline_format": "auto",
+        "changed_format": "auto",
+        "baseline_direction": "both",
+        "changed_direction": "both",
+        "baseline_flow_id": None,
+        "changed_flow_id": None,
+        "raw": False,
+        "change_label": "controlled change",
+    }
+    formats = {"auto", "bin", "hex", "pcap", "pcapng"}
+    field_count = 0
+    for part in message.iter_parts():
+        field_count += 1
+        if field_count > 32:
+            raise ValueError("multipart form has too many fields")
+        disposition = part.get_content_disposition()
+        field_name = part.get_param("name", header="content-disposition")
+        if field_name is not None and len(field_name) > 64:
+            raise ValueError("multipart field name exceeds length limit")
+        if disposition != "form-data" or not field_name:
+            continue
+        if field_name in {"baseline", "changed"}:
+            if field_name in captures:
+                raise ValueError(f"multipart form must contain one {field_name} file")
+            payload = part.get_payload(decode=True)
+            if not isinstance(payload, bytes):
+                raise ValueError("multipart file payload is invalid")
+            captures[field_name] = {
+                "name": _safe_upload_name(part.get_filename() or f"{field_name}.bin"),
+                "payload": payload,
+            }
+            continue
+        if field_name in values:
+            if field_name.endswith("_format"):
+                value = (part.get_content() or "auto").strip().lower()
+                if value not in formats:
+                    raise ValueError("experiment format is invalid")
+                values[field_name] = value
+            elif field_name.endswith("_direction"):
+                values[field_name] = normalize_direction((part.get_content() or "both").strip())
+            elif field_name.endswith("_flow_id"):
+                value = (part.get_content() or "").strip()
+                if len(value) > 200:
+                    raise ValueError("experiment flow_id exceeds length limit")
+                values[field_name] = value or None
+            elif field_name == "raw":
+                values[field_name] = (part.get_content() or "").strip().lower() in {"1", "true", "yes", "on"}
+            elif field_name == "change_label":
+                value = " ".join((part.get_content() or "").split())
+                if len(value) > 120:
+                    raise ValueError("change label exceeds length limit")
+                values[field_name] = value or "controlled change"
+    if set(captures) != {"baseline", "changed"}:
+        raise ValueError("multipart fields 'baseline' and 'changed' are required")
+    captures["baseline"].update({
+        "format": values["baseline_format"],
+        "direction": values["baseline_direction"],
+        "flow_id": values["baseline_flow_id"],
+    })
+    captures["changed"].update({
+        "format": values["changed_format"],
+        "direction": values["changed_direction"],
+        "flow_id": values["changed_flow_id"],
+    })
+    return {
+        "baseline": captures["baseline"],
+        "changed": captures["changed"],
+        "raw": values["raw"],
+        "change_label": values["change_label"],
+    }
+
+
+def _safe_upload_name(value: str) -> str:
+    """Keep provenance names bounded and path-free."""
+    name = Path(value.replace("\\", "/")).name
+    cleaned = "".join(character if character.isprintable() and character not in '\"\r\n' else "_" for character in name)
+    return cleaned[:200] or "upload.bin"
+
+
+def _experiment_source(source: dict, imported, byte_count: int, flows: list[dict]) -> dict:
+    return {
+        "name": source["name"],
+        "requested_format": source["format"],
+        "format": imported.format,
+        "packet_count": len(imported.packets),
+        "byte_count": byte_count,
+        "raw_sha256": hashlib.sha256(source["payload"]).hexdigest(),
+        "flows": [
+            {
+                "flow_id": item["flow_id"],
+                "protocol": item["protocol"],
+                "endpoint_a": item["endpoint_a"],
+                "endpoint_b": item["endpoint_b"],
+                "packet_count": item["packet_count"],
+                "direction_counts": item["direction_counts"],
+                "limitations": item["limitations"],
+            }
+            for item in flows
+        ],
+        "warnings": list(imported.warnings),
+    }
 
 
 def _merge_warnings(analyzer: list, importer: list[str]) -> list[dict[str, str]]:

@@ -273,6 +273,55 @@ class AnalysisManagerTests(unittest.TestCase):
             release.set()
             manager.close()
 
+    def test_controlled_experiment_imports_two_sources_and_keeps_provenance(self):
+        manager = self.make_manager(lambda packets, **kwargs: {"warnings": []})
+        try:
+            job = manager.submit_controlled_experiment(
+                "baseline.bin", "bin", b"\xaa\x01\x10",
+                "changed.bin", "bin", b"\xaa\x01\x20",
+                False,
+                baseline_direction="both",
+                changed_direction="both",
+                change_label="setting changed",
+            )
+            result = wait_for(manager, job.job_id, {"COMPLETE"})
+            report = result["result"]
+            self.assertEqual(report["change_label"], "setting changed")
+            self.assertEqual(report["baseline"]["name"], "baseline.bin")
+            self.assertEqual(report["changed"]["byte_count"], 3)
+            self.assertEqual(report["selection"]["independent_scopes"], True)
+            self.assertEqual(len(report["baseline"]["raw_sha256"]), 64)
+            self.assertEqual(len(report["changed"]["raw_sha256"]), 64)
+            self.assertEqual(manager._retained_payload_bytes, 0)
+        finally:
+            manager.close()
+
+    def test_controlled_experiment_cancellation_releases_both_payloads(self):
+        started = threading.Event()
+
+        def experimenter(packets, changed, *, cancel, **kwargs):
+            started.set()
+            while not cancel():
+                time.sleep(0.002)
+            return {"status": "CANCELLED", "warnings": []}
+
+        manager = AnalysisManager(
+            Limits(max_job_payload_bytes=32),
+            experimenter=experimenter,
+        )
+        try:
+            job = manager.submit_controlled_experiment(
+                "baseline.bin", "bin", b"123456",
+                "changed.bin", "bin", b"abcdef",
+                False,
+            )
+            self.assertTrue(started.wait(1))
+            self.assertTrue(manager.cancel(job.job_id))
+            self.assertEqual(wait_for(manager, job.job_id, {"CANCELLED"})["status"], "CANCELLED")
+            self.assertEqual(manager._retained_payload_bytes, 0)
+        finally:
+            manager.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,6 +37,53 @@ def multipart(
     return body, f"multipart/form-data; boundary={boundary}"
 
 
+def experiment_multipart(
+    baseline: bytes,
+    changed: bytes,
+    *,
+    baseline_name: str = "baseline.bin",
+    changed_name: str = "changed.bin",
+    baseline_format: str = "bin",
+    changed_format: str = "bin",
+    baseline_direction: str = "both",
+    changed_direction: str = "both",
+    baseline_flow_id: str | None = None,
+    changed_flow_id: str | None = None,
+    raw: bool = False,
+    change_label: str = "controlled change",
+) -> tuple[bytes, str]:
+    boundary = "----PacketScopeExperiment" + uuid.uuid4().hex
+    parts = []
+
+    def file_part(field: str, filename: str, payload: bytes) -> None:
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n".encode() + payload + b"\r\n"
+        )
+
+    def text_part(field: str, value: str) -> None:
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"\r\n\r\n{value}\r\n'.encode())
+
+    file_part("baseline", baseline_name, baseline)
+    file_part("changed", changed_name, changed)
+    for name, value in (
+        ("baseline_format", baseline_format),
+        ("changed_format", changed_format),
+        ("baseline_direction", baseline_direction),
+        ("changed_direction", changed_direction),
+        ("change_label", change_label),
+    ):
+        text_part(name, value)
+    if baseline_flow_id is not None:
+        text_part("baseline_flow_id", baseline_flow_id)
+    if changed_flow_id is not None:
+        text_part("changed_flow_id", changed_flow_id)
+    if raw:
+        text_part("raw", "true")
+    body = b"".join(parts) + f"--{boundary}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
 class WebIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.server = PacketScopeServer(("127.0.0.1", 0), Limits(max_input_bytes=512))
@@ -401,6 +448,71 @@ class WebIntegrationTests(unittest.TestCase):
             self.assertEqual(context.exception.code, 503)
         finally:
             release.set()
+
+    def test_controlled_experiment_prepare_job_and_report_export(self):
+        self.server.limits = Limits(max_input_bytes=4096, max_job_payload_bytes=4096)
+        self.server.analysis_manager.limits = self.server.limits
+        baseline = b"\xaa\x01\x10"
+        changed = b"\xaa\x01\x20"
+        body, content_type = experiment_multipart(baseline, changed, change_label="device setting")
+        with self.request("/api/experiments/prepare", "POST", body, content_type) as response:
+            prepared = json.load(response)
+        self.assertEqual(prepared["baseline"]["format"], "bin")
+        self.assertEqual(prepared["changed"]["packet_count"], 1)
+        self.assertEqual(len(prepared["baseline"]["raw_sha256"]), 64)
+
+        with self.request("/api/experiments", "POST", body, content_type) as response:
+            queued = json.load(response)
+        self.assertEqual(queued["operation"], "controlled_experiment")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with self.request(f"/api/jobs/{queued['job_id']}") as response:
+                status = json.load(response)
+            if status["status"] in {"COMPLETE", "FAILED", "CANCELLED"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(status["status"], "COMPLETE")
+        report = status["result"]
+        self.assertEqual(report["change_label"], "device setting")
+        self.assertEqual(report["correlated_ranges"][0]["offset"], 2)
+        self.assertEqual(report["provenance"]["operation"], "controlled_experiment")
+        with self.request(queued["report_url"]) as response:
+            exported = json.loads(response.read())
+            self.assertIn("packetscope-experiment-", response.headers["Content-Disposition"])
+        self.assertEqual(exported, report)
+
+    def test_controlled_experiment_supports_independent_flow_scopes(self):
+        self.server.limits = Limits(max_input_bytes=4096, max_job_payload_bytes=4096)
+        self.server.analysis_manager.limits = self.server.limits
+        capture = pcap_bytes()
+        flow_id = "ipv4/tcp/192.0.2.30:8000<->192.0.2.40:9000"
+        body, content_type = experiment_multipart(
+            capture,
+            capture.replace(b"tcp-v4-a3", b"tcp-v4-z3"),
+            baseline_name="baseline.pcap",
+            changed_name="changed.pcap",
+            baseline_format="pcap",
+            changed_format="pcap",
+            baseline_direction="forward",
+            changed_direction="reverse",
+            baseline_flow_id=flow_id,
+            changed_flow_id=flow_id,
+        )
+        with self.request("/api/experiments/prepare", "POST", body, content_type) as response:
+            prepared = json.load(response)
+        self.assertTrue(any(flow["flow_id"] == flow_id for flow in prepared["baseline"]["flows"]))
+        with self.request("/api/experiments", "POST", body, content_type) as response:
+            queued = json.load(response)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with self.request(f"/api/jobs/{queued['job_id']}") as response:
+                status = json.load(response)
+            if status["status"] in {"COMPLETE", "FAILED", "CANCELLED"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(status["status"], "COMPLETE")
+        self.assertEqual(status["result"]["selection"]["baseline_direction"], "forward")
+        self.assertEqual(status["result"]["selection"]["changed_direction"], "reverse")
 
 
 if __name__ == "__main__":
