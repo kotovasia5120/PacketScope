@@ -1,8 +1,9 @@
 import json
 import unittest
 
+from packetscope.analysis.crc import STANDARD_CRC, checksum_value, compute_crc
 from packetscope.models import Packet
-from packetscope.schema import apply_schema, migrate_schema, validate_schema
+from packetscope.schema import apply_schema, migrate_schema, validate_capture_against_schema, validate_schema
 
 
 class SchemaV2Tests(unittest.TestCase):
@@ -83,6 +84,108 @@ class SchemaV2Tests(unittest.TestCase):
         ]})
         truncated_result = apply_schema(truncated, [Packet(0, b"x")])
         self.assertEqual(truncated_result["values"][0]["fields"][0]["status"], "OUT_OF_BOUNDS")
+
+    def test_reviewed_checksum_relationships_validate_using_explicit_ranges(self):
+        body = b"abc"
+        checksum = compute_crc(body + b"z", STANDARD_CRC[0])
+        packet = body + bytes([checksum]) + b"z"
+        schema = validate_schema({
+            "schema_version": 2,
+            "fields": [
+                {"id": "body", "name": "Body", "type": "bytes", "offset": 0, "length": 3},
+                {"id": "crc", "name": "CRC", "type": "crc", "offset": 3, "length": 1, "endian": "big"},
+            ],
+            "relationships": [{
+                "id": "body-crc", "kind": "checksum", "field_id": "crc",
+                "algorithm": "CRC-8", "byte_order": "big",
+                "covered_ranges": {"include": [[0, 5]], "exclude": [[3, 4]]},
+            }],
+        })
+        applied = apply_schema(schema, [Packet(0, packet)])
+        relationship = applied["values"][0]["relationships"][0]
+        self.assertEqual(relationship["status"], "valid")
+        self.assertEqual(relationship["covered_ranges"], [[0, 3], [4, 5]])
+        self.assertEqual(relationship["actual"], compute_crc(body + b"z", STANDARD_CRC[0]))
+        self.assertEqual(applied["values"][0]["fields"][1]["relationship_status"], "valid")
+
+        corrupted = apply_schema(schema, [Packet(1, body + b"\x00z")])
+        self.assertEqual(corrupted["values"][0]["relationships"][0]["status"], "invalid")
+        report = validate_capture_against_schema(schema, [Packet(0, packet), Packet(1, body + b"\x00z")])
+        self.assertEqual([item["status"] for item in report["packets"]], ["ok", "violated"])
+        self.assertEqual(report["summary"]["relationship_counts"]["invalid"], 1)
+
+    def test_checksum_algorithms_and_end_relative_location_are_allow_listed(self):
+        cases = [
+            ("CRC-8", 1, "big"),
+            ("CRC-16/CCITT-FALSE", 2, "little"),
+            ("CRC-16/MODBUS", 2, "big"),
+            ("CRC-32/ISO-HDLC", 4, "little"),
+            ("XOR-8", 1, "big"),
+            ("ADDITIVE-8", 1, "big"),
+            ("ADDITIVE-16", 2, "little"),
+        ]
+        body = b"payload"
+        for index, (algorithm, width, byte_order) in enumerate(cases):
+            if algorithm.startswith("CRC"):
+                params = next(item for item in STANDARD_CRC if item.name == algorithm)
+                expected = compute_crc(body, params)
+            else:
+                expected = checksum_value(body, algorithm)
+            packet = body + expected.to_bytes(width, byte_order)
+            schema = validate_schema({
+                "schema_version": 2,
+                "fields": [{"id": "tail", "type": "bytes", "offset": 0, "length": len(packet)}],
+                "relationships": [{
+                    "id": algorithm, "algorithm": algorithm, "byte_order": byte_order,
+                    "location": {"mode": "from_end", "distance": width, "width": width},
+                    "covered_ranges": [[0, len(body)]],
+                }],
+            })
+            relationship = apply_schema(schema, [Packet(index, packet)])["values"][0]["relationships"][0]
+            self.assertEqual(relationship["status"], "valid", algorithm)
+
+    def test_checksum_incomplete_unsupported_and_unresolved_are_distinct(self):
+        base = {
+            "schema_version": 2,
+            "fields": [
+                {"id": "body", "type": "bytes", "offset": 0, "length": 3},
+                {"id": "crc", "type": "crc", "offset": 3, "length": 1},
+            ],
+        }
+        truncated_schema = validate_schema({**base, "relationships": [{
+            "id": "truncated", "field_id": "crc", "algorithm": "CRC-8", "covered_ranges": [[0, 3]],
+        }]})
+        truncated = apply_schema(truncated_schema, [Packet(0, b"abc")])["values"][0]["relationships"][0]
+        self.assertEqual(truncated["status"], "insufficient")
+        self.assertEqual(validate_capture_against_schema(truncated_schema, [Packet(0, b"abc")])["packets"][0]["status"], "incomplete")
+
+        unsupported_schema = validate_schema({**base, "relationships": [{
+            "id": "unknown", "field_id": "crc", "algorithm": "CRC-64", "covered_ranges": [[0, 3]],
+        }]})
+        unsupported = apply_schema(unsupported_schema, [Packet(1, b"abc\x00")])["values"][0]["relationships"][0]
+        self.assertEqual(unsupported["status"], "unsupported")
+
+        unresolved_schema = validate_schema({**base, "relationships": [{
+            "id": "dynamic", "field_id": "crc", "algorithm": "CRC-8",
+            "covered_ranges": [[{"field": "missing-length"}, 3]],
+        }]})
+        unresolved = apply_schema(unresolved_schema, [Packet(2, b"abc\x00")])["values"][0]["relationships"][0]
+        self.assertEqual(unresolved["status"], "unresolved")
+
+    def test_field_checksum_descriptor_and_static_location(self):
+        body = b"xy"
+        checksum = checksum_value(body, "ADDITIVE-8")
+        schema = validate_schema({
+            "schema_version": 2,
+            "fields": [
+                {"id": "body", "type": "bytes", "offset": 0, "length": 2},
+                {"id": "sum", "type": "checksum", "offset": 2, "length": 1,
+                 "checksum": {"algorithm": "ADDITIVE-8", "location": {"offset": 2, "width": 1}, "covered_range": [0, 2]}},
+            ],
+        })
+        relationship = apply_schema(schema, [Packet(0, body + bytes([checksum]))])["values"][0]["relationships"][0]
+        self.assertEqual(relationship["status"], "valid")
+        self.assertEqual(relationship["location"], {"offset": 2, "length": 1})
 
 
 if __name__ == "__main__":

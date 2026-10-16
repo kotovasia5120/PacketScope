@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
+from packetscope.analysis.crc import STANDARD_CRC, checksum_value, compute_crc
 from packetscope.models import Packet
 from packetscope.protocols import COORDINATE_SYSTEMS, coordinate_bytes
 
@@ -324,6 +325,18 @@ _V2_OPERATION_NAMES = {
     "negate",
 }
 
+# Relationship evaluation intentionally uses the public checksum engine rather
+# than maintaining a second implementation here.  The map is an explicit
+# allow-list: schema data can select one of these reviewed algorithms, but it
+# can never turn a string into a callable.
+_V2_CHECKSUM_ALGORITHMS = {
+    **{params.name: ("crc", params) for params in STANDARD_CRC},
+    "XOR-8": ("checksum", None),
+    "ADDITIVE-8": ("checksum", None),
+    "ADDITIVE-16": ("checksum", None),
+}
+_V2_MAX_CHECKSUM_RANGES = 1024
+
 
 def _v2_json_safe(value: Any, *, depth: int = 0) -> Any:
     """Copy only bounded JSON values; schema data never becomes executable."""
@@ -504,6 +517,8 @@ def _v2_normalize_field(item: Any, *, index: int, parent_id: str | None = None, 
         "presence": presence, "fields": nested, "array": array,
         "definition": definition, "constraints": _v2_json_safe(item.get("constraints", {})),
         "metadata": _v2_json_safe(item.get("metadata", {})),
+        "algorithm": _v2_json_safe(item.get("algorithm")) if item.get("algorithm") is not None else None,
+        "byte_order": _v2_json_safe(item.get("byte_order")) if item.get("byte_order") is not None else None,
         "checksum": _v2_json_safe(item.get("checksum")) if item.get("checksum") is not None else None,
         "relationship": _v2_json_safe(item.get("relationship")) if item.get("relationship") is not None else None,
     }
@@ -1108,6 +1123,462 @@ def _v2_merge_status(current: str, candidate: str) -> str:
     return candidate if priority.get(candidate, 4) > priority.get(current, 0) else current
 
 
+def _v2_checksum_algorithm(value: Any) -> str | None:
+    """Return a canonical algorithm name from the explicit checksum allow-list."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper().replace("_", "-")
+    for name in _V2_CHECKSUM_ALGORITHMS:
+        if name.upper().replace("_", "-") == normalized:
+            return name
+    return None
+
+
+def _v2_relationship_descriptors(checked: dict[str, Any]) -> list[tuple[str, str | None, dict[str, Any]]]:
+    """Collect top-level and field-owned checksum descriptors deterministically."""
+    candidates: list[tuple[str, str | None, dict[str, Any], int]] = []
+    sequence = 0
+
+    for relationship in checked.get("relationships", []):
+        if not isinstance(relationship, dict):
+            continue
+        descriptor = dict(relationship)
+        nested = descriptor.get("checksum")
+        if isinstance(nested, dict):
+            merged = dict(nested)
+            merged.update({key: value for key, value in descriptor.items() if key != "checksum"})
+            descriptor = merged
+        elif isinstance(nested, str):
+            descriptor.setdefault("checksum_field", nested)
+        relationship_id = str(descriptor.get("id", f"relationship_{sequence}"))
+        candidates.append((relationship_id, None, descriptor, sequence))
+        sequence += 1
+
+    for field in _v2_walk_fields(checked.get("fields", [])):
+        field_descriptors: list[tuple[str, Any]] = [("checksum", field.get("checksum")), ("relationship", field.get("relationship"))]
+        if all(raw is None for _, raw in field_descriptors) and str(field.get("type", "")).lower() in {"crc", "checksum"} and field.get("algorithm") is not None:
+            field_descriptors.append(("checksum", {"algorithm": field.get("algorithm"), "byte_order": field.get("byte_order")}))
+        for descriptor_key, raw in field_descriptors:
+            if raw is None:
+                continue
+            if isinstance(raw, dict):
+                descriptor = dict(raw)
+            else:
+                # A scalar field descriptor is retained as an unsupported
+                # descriptor, so malformed reviewed metadata is observable.
+                descriptor = {"algorithm": raw}
+            for key in ("algorithm", "byte_order"):
+                if key not in descriptor and field.get(key) is not None:
+                    descriptor[key] = field[key]
+            relationship_id = str(descriptor.get("id", f"field:{field['id']}:{descriptor_key}"))
+            candidates.append((relationship_id, field["id"], descriptor, sequence))
+            sequence += 1
+
+    # Preserve explicit IDs while making duplicate IDs stable and unambiguous.
+    seen: dict[str, int] = {}
+    result: list[tuple[str, str | None, dict[str, Any]]] = []
+    for relationship_id, owner_id, descriptor, _ in candidates:
+        count = seen.get(relationship_id, 0)
+        seen[relationship_id] = count + 1
+        if count:
+            relationship_id = f"{relationship_id}#{count + 1}"
+        result.append((relationship_id, owner_id, descriptor))
+    return result
+
+
+def _v2_relationship_target_id(descriptor: dict[str, Any], owner_id: str | None) -> str | None:
+    for key in ("checksum_field", "checksum_field_id", "target_field", "target_field_id", "field_id", "target", "field"):
+        value = descriptor.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    location = descriptor.get("location")
+    if isinstance(location, str) and location.strip():
+        return location.strip()
+    if isinstance(location, dict):
+        for key in ("field_id", "field", "ref", "field_ref", "target"):
+            value = location.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        location_kind = str(location.get("kind", location.get("type", ""))).lower()
+        if (location_kind in {"field", "field_id", "field_ref", "reference"} or not any(key in location for key in ("start", "offset", "absolute_offset", "end", "length", "width", "range"))) and isinstance(location.get("id"), str):
+            return location["id"].strip()
+    return owner_id
+
+
+def _v2_relationship_failure(status: str, relationship_id: str, code: str, message: str, **extra: Any) -> dict[str, Any]:
+    diagnostic = _v2_diag(status, code, message, relationship_id=relationship_id, **extra)
+    return {
+        "id": relationship_id,
+        "kind": "checksum",
+        "status": status,
+        "algorithm": extra.pop("algorithm", None),
+        "checksum_field_id": extra.pop("checksum_field_id", None),
+        "byte_order": extra.pop("byte_order", None),
+        "location": None,
+        "covered_ranges": [],
+        "expected": None,
+        "actual": None,
+        "diagnostics": [diagnostic],
+    }
+
+
+def _v2_eval_checksum_integer(value: Any, values: dict[str, dict[str, Any]], budgets: dict[str, int]) -> tuple[str, int | None, str]:
+    if isinstance(value, bool):
+        return "unsupported", None, "boolean range coordinates are not supported"
+    if isinstance(value, int):
+        return "resolved", value, ""
+    if isinstance(value, dict):
+        evaluated = _v2_eval_expr(value, values, budgets)
+        if evaluated.get("status") == "RESOLVED":
+            numeric = _v2_numeric(evaluated.get("value"))
+            if numeric is not None and not isinstance(evaluated.get("value"), bool):
+                return "resolved", numeric, ""
+        if any(item.get("code") in {"missing_reference", "dependency_status"} for item in evaluated.get("diagnostics", [])):
+            if evaluated.get("status") in {"OUT_OF_BOUNDS", "UNAVAILABLE"}:
+                return "insufficient", None, "range coordinate depends on incomplete field data"
+            return "unresolved", None, "range coordinate depends on an unresolved field"
+        if evaluated.get("status") in {"UNKNOWN", "CYCLIC"}:
+            return "unresolved", None, "range coordinate is unresolved"
+    return "unsupported", None, "range coordinate must be a bounded integer or field expression"
+
+
+def _v2_checksum_range_items(raw: Any) -> tuple[str, list[Any], str]:
+    if raw is None:
+        return "resolved", [], ""
+    if isinstance(raw, dict):
+        # A single explicit range is accepted in addition to include/exclude
+        # collections.  This keeps covered_range and covered_ranges symmetric.
+        if any(key in raw for key in ("start", "offset", "from", "begin", "end", "to", "stop", "length", "width")):
+            return "resolved", [raw], ""
+        return "unsupported", [], "range collection must contain include or range entries"
+    if isinstance(raw, (list, tuple)):
+        if len(raw) == 2 and not isinstance(raw[0], (list, tuple, dict)) and not isinstance(raw[1], (list, tuple, dict)):
+            return "resolved", [raw], ""
+        return "resolved", list(raw), ""
+    return "unsupported", [], "range collection must be a range or list of ranges"
+
+
+def _v2_checksum_one_range(raw: Any, values: dict[str, dict[str, Any]], budgets: dict[str, int], *, data_length: int) -> tuple[str, tuple[int, int] | None, str]:
+    if isinstance(raw, (list, tuple)):
+        if len(raw) != 2:
+            return "unsupported", None, "range arrays must contain start and end"
+        start_raw, end_raw = raw
+    elif isinstance(raw, dict):
+        if "range" in raw:
+            return _v2_checksum_one_range(raw["range"], values, budgets, data_length=data_length)
+        start_raw = raw.get("start", raw.get("offset", raw.get("from", raw.get("begin"))))
+        if "end" in raw or "to" in raw or "stop" in raw:
+            end_raw = raw.get("end", raw.get("to", raw.get("stop")))
+        elif "length" in raw or "width" in raw:
+            length_status, length, length_message = _v2_eval_checksum_integer(raw.get("length", raw.get("width")), values, budgets)
+            if length_status != "resolved" or length is None:
+                return length_status, None, length_message
+            start_status, start, start_message = _v2_eval_checksum_integer(start_raw, values, budgets)
+            if start_status != "resolved" or start is None:
+                return start_status, None, start_message
+            end_raw = start + length
+        else:
+            return "unsupported", None, "range requires an end or length"
+    else:
+        return "unsupported", None, "range must be an array or object"
+    start_status, start, start_message = _v2_eval_checksum_integer(start_raw, values, budgets)
+    end_status, end, end_message = _v2_eval_checksum_integer(end_raw, values, budgets)
+    if start_status != "resolved":
+        return start_status, None, start_message
+    if end_status != "resolved":
+        return end_status, None, end_message
+    assert start is not None and end is not None
+    if start < 0 or end < start:
+        return "unsupported", None, "range bounds are invalid"
+    if end > budgets["max_bytes_per_packet"]:
+        return "unsupported", None, "range exceeds the packet budget"
+    if end > data_length:
+        return "insufficient", (start, end), "range extends beyond captured bytes"
+    return "resolved", (start, end), ""
+
+
+def _v2_checksum_coverage(
+    descriptor: dict[str, Any],
+    *,
+    location: tuple[int, int],
+    data: bytes,
+    values: dict[str, dict[str, Any]],
+    budgets: dict[str, int],
+) -> tuple[str, list[tuple[int, int]], bytes | None, str]:
+    coverage_raw = None
+    for key in ("coverage", "covered", "covered_ranges", "covered_range", "ranges"):
+        if key in descriptor:
+            coverage_raw = descriptor[key]
+            break
+    explicit = coverage_raw is not None or "include" in descriptor or "exclude" in descriptor
+    include_raw: Any = coverage_raw
+    exclude_raw: Any = None
+    if isinstance(coverage_raw, dict):
+        include_raw = coverage_raw.get("include", coverage_raw.get("ranges", coverage_raw.get("covered_ranges")))
+        exclude_raw = coverage_raw.get("exclude")
+    if "include" in descriptor:
+        include_raw = descriptor.get("include")
+    if "exclude" in descriptor:
+        exclude_raw = descriptor.get("exclude")
+    if not explicit:
+        include_items: list[Any] = [[0, len(data)]]
+        exclude_items: list[Any] = [list(location)]
+    else:
+        if include_raw is None:
+            include_items = [[0, len(data)]]
+        else:
+            include_status, include_items, include_message = _v2_checksum_range_items(include_raw)
+            if include_status != "resolved":
+                return include_status, [], None, include_message
+        if exclude_raw is None:
+            exclude_items = []
+        else:
+            exclude_status, exclude_items, exclude_message = _v2_checksum_range_items(exclude_raw)
+            if exclude_status != "resolved":
+                return exclude_status, [], None, exclude_message
+    if len(include_items) + len(exclude_items) > _V2_MAX_CHECKSUM_RANGES:
+        return "unsupported", [], None, "checksum range count exceeds the limit"
+    includes: list[tuple[int, int]] = []
+    excludes: list[tuple[int, int]] = []
+    for raw, destination in ((item, includes) for item in include_items):
+        status, value, message = _v2_checksum_one_range(raw, values, budgets, data_length=len(data))
+        if status != "resolved" or value is None:
+            return status, [], None, message
+        destination.append(value)
+    for raw, destination in ((item, excludes) for item in exclude_items):
+        status, value, message = _v2_checksum_one_range(raw, values, budgets, data_length=len(data))
+        if status != "resolved" or value is None:
+            return status, [], None, message
+        destination.append(value)
+    covered_ranges: list[tuple[int, int]] = []
+    parts: list[bytes] = []
+    total = 0
+    for start, end in includes:
+        segments = [(start, end)]
+        for excluded_start, excluded_end in excludes:
+            next_segments: list[tuple[int, int]] = []
+            for segment_start, segment_end in segments:
+                if excluded_end <= segment_start or excluded_start >= segment_end:
+                    next_segments.append((segment_start, segment_end))
+                    continue
+                if segment_start < excluded_start:
+                    next_segments.append((segment_start, min(excluded_start, segment_end)))
+                if excluded_end < segment_end:
+                    next_segments.append((max(excluded_end, segment_start), segment_end))
+            segments = next_segments
+        for segment_start, segment_end in segments:
+            if segment_end <= segment_start:
+                continue
+            total += segment_end - segment_start
+            if total > budgets["max_bytes_per_packet"]:
+                return "unsupported", [], None, "covered bytes exceed the packet budget"
+            covered_ranges.append((segment_start, segment_end))
+            parts.append(data[segment_start:segment_end])
+    return "resolved", covered_ranges, b"".join(parts), ""
+
+
+def _v2_checksum_location(
+    descriptor: dict[str, Any],
+    *,
+    target_id: str | None,
+    values: dict[str, dict[str, Any]],
+    field_map: dict[str, dict[str, Any]],
+    data_length: int,
+    budgets: dict[str, int],
+    width: int,
+) -> tuple[str, tuple[int, int] | None, str, str | None]:
+    location = descriptor.get("location")
+    mode = str(descriptor.get("location_mode", descriptor.get("mode", "absolute"))).lower().replace("-", "_")
+    explicit_location = location is not None
+    selected_target = target_id
+    if isinstance(location, str):
+        selected_target = location
+        explicit_location = False
+    elif isinstance(location, dict):
+        reference = next((location.get(key) for key in ("field_id", "field", "ref", "field_ref", "target") if isinstance(location.get(key), str)), None)
+        location_kind = str(location.get("kind", location.get("type", ""))).lower()
+        if reference is None and (location_kind in {"field", "field_id", "field_ref", "reference"} or not any(key in location for key in ("start", "offset", "absolute_offset", "end", "length", "width", "range"))) and isinstance(location.get("id"), str):
+            reference = location["id"]
+        if reference is not None:
+            selected_target = reference
+            explicit_location = False
+        mode = str(location.get("location_mode", location.get("mode", location.get("type", location.get("relative_to", mode))))).lower().replace("-", "_")
+    if not explicit_location and selected_target is not None:
+        target = values.get(selected_target)
+        if target is None or selected_target not in field_map:
+            return "unresolved", None, f"checksum field {selected_target!r} does not exist", selected_target
+        target_status = target.get("status")
+        if target_status != "RESOLVED":
+            if target_status in {"OUT_OF_BOUNDS", "UNAVAILABLE", "UNKNOWN"}:
+                return "insufficient", None, f"checksum field {selected_target!r} is incomplete", selected_target
+            return "unresolved", None, f"checksum field {selected_target!r} is not resolved", selected_target
+        start, target_length = target.get("offset"), target.get("length")
+        if not isinstance(start, int) or not isinstance(target_length, int):
+            return "unresolved", None, f"checksum field {selected_target!r} has no concrete location", selected_target
+        if target_length != width:
+            return "unsupported", None, "checksum field width does not match the selected algorithm", selected_target
+        return "resolved", (start, start + target_length), "", selected_target
+    if isinstance(location, (list, tuple)):
+        if len(location) != 2:
+            return "unsupported", None, "checksum location arrays must contain start and end", selected_target
+        start_status, start, start_message = _v2_eval_checksum_integer(location[0], values, budgets)
+        end_status, end, end_message = _v2_eval_checksum_integer(location[1], values, budgets)
+        if start_status != "resolved" or end_status != "resolved" or start is None or end is None:
+            return (start_status, None, start_message, selected_target) if start_status != "resolved" else (end_status, None, end_message, selected_target)
+        location_range = (start, end)
+    elif isinstance(location, dict):
+        if "range" in location:
+            range_status, location_range, range_message = _v2_checksum_one_range(location["range"], values, budgets, data_length=data_length)
+            if range_status != "resolved" or location_range is None:
+                return range_status, None, range_message, selected_target
+        else:
+            length_raw = location.get("length", location.get("width", width))
+            length_status, length, length_message = _v2_eval_checksum_integer(length_raw, values, budgets)
+            if length_status != "resolved" or length is None:
+                return length_status, None, length_message, selected_target
+            if mode in {"from_end", "end_relative", "relative_to_end", "end"} or any(key in location for key in ("from_end", "offset_from_end", "end_relative", "distance")):
+                distance_raw = next((location.get(key) for key in ("from_end", "offset_from_end", "end_relative", "distance", "offset", "start") if key in location), length)
+                distance_status, distance, distance_message = _v2_eval_checksum_integer(distance_raw, values, budgets)
+                if distance_status != "resolved" or distance is None:
+                    return distance_status, None, distance_message, selected_target
+                if distance == 0:
+                    distance = length
+                location_range = (data_length - distance, data_length - distance + length)
+            else:
+                start_raw = location.get("start", location.get("offset", location.get("absolute_offset")))
+                start_status, start, start_message = _v2_eval_checksum_integer(start_raw, values, budgets)
+                if start_status != "resolved" or start is None:
+                    return start_status, None, start_message, selected_target
+                location_range = (start, start + length)
+    elif location is not None:
+        if mode in {"from_end", "end_relative", "relative_to_end", "end"}:
+            distance_status, distance, distance_message = _v2_eval_checksum_integer(location, values, budgets)
+            if distance_status != "resolved" or distance is None:
+                return distance_status, None, distance_message, selected_target
+            if distance == 0:
+                distance = width
+            location_range = (data_length - distance, data_length - distance + width)
+        else:
+            start_status, start, start_message = _v2_eval_checksum_integer(location, values, budgets)
+            if start_status != "resolved" or start is None:
+                return start_status, None, start_message, selected_target
+            location_range = (start, start + width)
+    elif mode in {"from_end", "end_relative", "relative_to_end", "end"}:
+        distance_raw = descriptor.get("offset_from_end", descriptor.get("distance", width))
+        distance_status, distance, distance_message = _v2_eval_checksum_integer(distance_raw, values, budgets)
+        if distance_status != "resolved" or distance is None:
+            return distance_status, None, distance_message, selected_target
+        if distance == 0:
+            distance = width
+        location_range = (data_length - distance, data_length - distance + width)
+    elif "offset" in descriptor or "start" in descriptor or "absolute_offset" in descriptor:
+        start_status, start, start_message = _v2_eval_checksum_integer(descriptor.get("offset", descriptor.get("start", descriptor.get("absolute_offset"))), values, budgets)
+        if start_status != "resolved" or start is None:
+            return start_status, None, start_message, selected_target
+        location_range = (start, start + width)
+    else:
+        return "unsupported", None, "checksum location is not declared", selected_target
+    start, end = location_range
+    if start < 0 and mode in {"from_end", "end_relative", "relative_to_end", "end"}:
+        return "insufficient", location_range, "end-relative checksum location extends before captured bytes", selected_target
+    if start < 0 or end <= start or end - start != width:
+        return "unsupported", None, "checksum location width or bounds are invalid", selected_target
+    if start > budgets["max_bytes_per_packet"] or end > budgets["max_bytes_per_packet"]:
+        return "unsupported", None, "checksum location exceeds the packet budget", selected_target
+    if end > data_length:
+        return "insufficient", location_range, "checksum location extends beyond captured bytes", selected_target
+    return "resolved", location_range, "", selected_target
+
+
+def _v2_apply_checksum_relationship(
+    descriptor_id: str,
+    owner_id: str | None,
+    descriptor: dict[str, Any],
+    *,
+    packet: Packet,
+    checked: dict[str, Any],
+    values: dict[str, dict[str, Any]],
+    field_map: dict[str, dict[str, Any]],
+    coordinate_cache: dict[str, tuple[bytes | None, dict[str, Any]]],
+) -> dict[str, Any]:
+    nested = descriptor.get("checksum")
+    if isinstance(nested, dict):
+        merged = dict(nested)
+        merged.update({key: value for key, value in descriptor.items() if key != "checksum"})
+        descriptor = merged
+    algorithm = _v2_checksum_algorithm(descriptor.get("algorithm"))
+    target_id = _v2_relationship_target_id(descriptor, owner_id)
+    if algorithm is None:
+        return _v2_relationship_failure("unsupported", descriptor_id, "checksum_algorithm", "checksum algorithm is not in the reviewed allow-list", algorithm=descriptor.get("algorithm"), checksum_field_id=target_id)
+    kind = str(descriptor.get("kind", "checksum")).lower()
+    if kind not in {"checksum", "crc", "checksum_relationship", "check"}:
+        return _v2_relationship_failure("unsupported", descriptor_id, "relationship_kind", "relationship kind is not a checksum relationship", algorithm=algorithm, checksum_field_id=target_id)
+    target_declared = owner_id is not None or any(key in descriptor for key in ("checksum_field", "checksum_field_id", "target_field", "target_field_id", "field_id", "target", "field"))
+    if target_declared and (target_id is None or target_id not in field_map):
+        return _v2_relationship_failure("unresolved", descriptor_id, "checksum_field", "checksum field reference does not exist", algorithm=algorithm, checksum_field_id=target_id)
+    algorithm_kind, params = _V2_CHECKSUM_ALGORITHMS[algorithm]
+    algorithm_width = params.width // 8 if params is not None else {"XOR-8": 1, "ADDITIVE-8": 1, "ADDITIVE-16": 2}[algorithm]
+    coordinate_system = descriptor.get("coordinate_system")
+    if coordinate_system is None and target_id in field_map:
+        coordinate_system = field_map[target_id].get("coordinate_system")
+    coordinate_system = coordinate_system or checked["coordinate_system"]
+    if not isinstance(coordinate_system, str) or coordinate_system not in COORDINATE_SYSTEMS:
+        return _v2_relationship_failure("unsupported", descriptor_id, "coordinate_system", "checksum coordinate system is invalid", algorithm=algorithm, checksum_field_id=target_id)
+    if coordinate_system not in coordinate_cache:
+        coordinate_cache[coordinate_system] = coordinate_bytes(packet, coordinate_system)
+    data, metadata = coordinate_cache[coordinate_system]
+    if data is None or not metadata.get("available"):
+        return _v2_relationship_failure("insufficient", descriptor_id, "coordinate_unavailable", "checksum coordinate bytes are unavailable", algorithm=algorithm, checksum_field_id=target_id)
+    if len(data) > checked["budgets"]["max_bytes_per_packet"]:
+        return _v2_relationship_failure("unsupported", descriptor_id, "packet_budget", "checksum coordinate bytes exceed the packet budget", algorithm=algorithm, checksum_field_id=target_id)
+    byte_order = descriptor.get("byte_order", descriptor.get("endianness", descriptor.get("endian", descriptor.get("order"))))
+    if byte_order is None and target_id in field_map:
+        byte_order = field_map[target_id].get("endian")
+    if byte_order is None or byte_order == "unknown":
+        byte_order = "big"
+    elif isinstance(byte_order, str):
+        byte_order = byte_order.lower()
+    if byte_order not in {"big", "little"}:
+        return _v2_relationship_failure("unsupported", descriptor_id, "byte_order", "checksum byte order must be big or little", algorithm=algorithm, checksum_field_id=target_id)
+    declared_width = descriptor.get("width", descriptor.get("checksum_width"))
+    if declared_width is not None:
+        width_status, width_value, width_message = _v2_eval_checksum_integer(declared_width, values, checked["budgets"])
+        if width_status != "resolved" or width_value is None:
+            return _v2_relationship_failure(width_status, descriptor_id, "checksum_width", width_message, algorithm=algorithm, checksum_field_id=target_id, byte_order=byte_order)
+        if width_value != algorithm_width:
+            return _v2_relationship_failure("unsupported", descriptor_id, "checksum_width", "declared checksum width does not match the selected algorithm", algorithm=algorithm, checksum_field_id=target_id, byte_order=byte_order)
+    location_status, location, location_message, resolved_target_id = _v2_checksum_location(
+        descriptor, target_id=target_id, values=values, field_map=field_map,
+        data_length=len(data), budgets=checked["budgets"], width=algorithm_width,
+    )
+    if location_status != "resolved" or location is None:
+        return _v2_relationship_failure(location_status, descriptor_id, "checksum_location", location_message, algorithm=algorithm, checksum_field_id=resolved_target_id or target_id, byte_order=byte_order)
+    coverage_status, covered_ranges, covered_data, coverage_message = _v2_checksum_coverage(
+        descriptor, location=location, data=data, values=values, budgets=checked["budgets"],
+    )
+    if coverage_status != "resolved" or covered_data is None:
+        return _v2_relationship_failure(coverage_status, descriptor_id, "checksum_coverage", coverage_message, algorithm=algorithm, checksum_field_id=resolved_target_id or target_id, byte_order=byte_order)
+    start, end = location
+    expected = int.from_bytes(data[start:end], byte_order)
+    actual = compute_crc(covered_data, params) if algorithm_kind == "crc" else checksum_value(covered_data, algorithm)
+    status = "valid" if actual == expected else "invalid"
+    code = "checksum_valid" if status == "valid" else "checksum_mismatch"
+    diagnostic = _v2_diag(status, code, "checksum matches covered bytes" if status == "valid" else "checksum does not match covered bytes", relationship_id=descriptor_id, expected=expected, actual=actual)
+    return {
+        "id": descriptor_id,
+        "kind": "checksum",
+        "status": status,
+        "algorithm": algorithm,
+        "checksum_field_id": resolved_target_id or target_id,
+        "byte_order": byte_order,
+        "location": {"offset": start, "length": end - start},
+        "covered_ranges": [[range_start, range_end] for range_start, range_end in covered_ranges],
+        "expected": expected,
+        "actual": actual,
+        "diagnostics": [diagnostic],
+    }
+
+
 def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
     checked["_runtime"] = {"array_items": 0}
     values: dict[str, dict[str, Any]] = {}
@@ -1151,13 +1622,34 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
     fields = [field_outputs[field["id"]] for field in checked["fields"]]
     diagnostics = list(checked.get("diagnostics", []))
     diagnostics.extend(item for item in graph_diagnostics if item not in diagnostics)
-    for relationship in checked.get("relationships", []):
-        diagnostics.append(_v2_diag("INVALID", "checksum_relationship_unsupported", "checksum relationship is descriptive and is not executed", relationship_id=str(relationship.get("id", "relationship"))))
+    coordinate_cache: dict[str, tuple[bytes | None, dict[str, Any]]] = {}
+    relationship_results: list[dict[str, Any]] = []
+    for relationship_id, owner_id, descriptor in _v2_relationship_descriptors(checked):
+        relationship = _v2_apply_checksum_relationship(
+            relationship_id, owner_id, descriptor, packet=packet, checked=checked,
+            values=values, field_map=field_map, coordinate_cache=coordinate_cache,
+        )
+        relationship_results.append(relationship)
+        diagnostics.extend(relationship.get("diagnostics", []))
+        target_id = relationship.get("checksum_field_id") or owner_id
+        if target_id in field_outputs:
+            target_output = field_outputs[target_id]
+            target_output.setdefault("checksum_diagnostics", []).append(relationship)
+            target_output["relationship_status"] = relationship["status"]
+    relationship_results.sort(key=lambda item: str(item.get("id", "")))
+    for output in field_outputs.values():
+        if "checksum_diagnostics" in output:
+            output["checksum_diagnostics"].sort(key=lambda item: str(item.get("id", "")))
     diagnostics = sorted(diagnostics, key=lambda item: (str(item.get("field_id", "")), str(item.get("code", "")), str(item.get("reference", item.get("relationship_id", "")))))
     packet_status = "RESOLVED"
     for field in fields:
         packet_status = _v2_merge_status(packet_status, field.get("status", "INVALID"))
-    return {"packet_id": packet.index, "status": packet_status, "fields": fields, "diagnostics": diagnostics}
+    return {
+        "packet_id": packet.index, "status": packet_status, "fields": fields,
+        "relationships": relationship_results,
+        "checksum_diagnostics": relationship_results,
+        "diagnostics": diagnostics,
+    }
 
 
 def _apply_schema_v2(schema: dict[str, Any], packets: Iterable[Packet], max_packets: int = 100_000) -> dict[str, Any]:
@@ -1206,11 +1698,35 @@ def _validate_capture_against_schema_v2(schema: dict[str, Any], packets: Iterabl
     packet_diagnostics: list[dict[str, Any]] = []
     for packet in applied["values"]:
         field_statuses = {field.get("status") for field in packet.get("fields", [])}
-        if field_statuses <= {"RESOLVED", "UNKNOWN"}:
-            status = "ok" if "UNKNOWN" not in field_statuses else "incomplete"
-        else:
+        relationship_results = packet.get("relationships", packet.get("checksum_diagnostics", []))
+        relationship_statuses = {item.get("status") for item in relationship_results}
+        field_incomplete = field_statuses & {"UNKNOWN", "UNAVAILABLE", "OUT_OF_BOUNDS"}
+        field_violated = field_statuses & {"INVALID", "CYCLIC", "LIMIT_EXCEEDED"}
+        relationship_invalid = "invalid" in relationship_statuses
+        relationship_incomplete = relationship_statuses & {"insufficient", "unresolved", "unsupported"}
+        if field_violated or relationship_invalid:
             status = "violated"
-        packet_diagnostics.append({"packet_id": packet["packet_id"], "status": status, "schema_status": packet.get("status"), "fields": packet.get("fields", []), "diagnostics": packet.get("diagnostics", [])})
+        elif field_incomplete or relationship_incomplete:
+            # A missing byte, unavailable coordinate, or unresolved reviewed
+            # range means validation could not be completed.  It is not a
+            # checksum mismatch and must not be reported as invalid data.
+            status = "incomplete"
+        else:
+            status = "ok"
+        packet_diagnostics.append({
+            "packet_id": packet["packet_id"], "status": status,
+            "schema_status": packet.get("status"),
+            "fields": packet.get("fields", []),
+            "relationships": relationship_results,
+            "checksum_diagnostics": relationship_results,
+            "diagnostics": packet.get("diagnostics", []),
+        })
+    relationship_counts = {status: 0 for status in ("valid", "invalid", "insufficient", "unsupported", "unresolved")}
+    for packet in packet_diagnostics:
+        for relationship in packet.get("relationships", []):
+            status = relationship.get("status")
+            if status in relationship_counts:
+                relationship_counts[status] += 1
     return {
         "schema_version": SCHEMA_V2_VERSION,
         "summary": {
@@ -1218,6 +1734,7 @@ def _validate_capture_against_schema_v2(schema: dict[str, Any], packets: Iterabl
             "decoded_packets": sum(item["status"] == "ok" for item in packet_diagnostics),
             "incomplete_packets": sum(item["status"] == "incomplete" for item in packet_diagnostics),
             "invalid_packets": sum(item["status"] == "violated" for item in packet_diagnostics),
+            "relationship_counts": relationship_counts,
             "schema_diagnostics": len(applied.get("schema_diagnostics", [])),
             "application_status": applied.get("status"),
         },
