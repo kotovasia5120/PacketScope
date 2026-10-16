@@ -119,6 +119,26 @@ Implemented locally in the current working tree:
 Docker and a hosted CI run on the final release commit remain release gates;
 see [`docs/phase7-progress.md`](phase7-progress.md).
 
+## Phase 8 — integrated experimental reverse engineering
+
+The first P0 browser milestone is implemented in the current continuation:
+
+- A dedicated dependency-free Experiments workspace accepts independent
+  baseline and changed BIN, HEX, PCAP, and PCAPNG captures.
+- The existing bounded single-worker job lifecycle now supports controlled
+  experiment jobs with progress, cooperative cancellation, aggregate two-file
+  retention accounting, independent flow/direction scopes, exact upload hashes,
+  and a retained JSON report download.
+- The browser renders server-produced changed ranges, distributions, bounded
+  synchronized HEX evidence, contradictions, limitations, deterministic
+  follow-up suggestions, manual annotations, export, and report-only restore.
+- Real Chromium coverage exercises the complete run/review/annotate/export/
+  restore flow and independent PCAP flow scopes.
+
+**Status:** Phase 8.1 P0 is complete locally. Phase 8.2/8.3 evidence-model
+extensions are partial; repeated-experiment identity and richer statistics are
+not yet implemented. See [`docs/phase8-progress.md`](phase8-progress.md).
+
 ## Continuation plan — reliability and investigation workspace
 
 This is the actionable plan for the post-Phase-7 continuation. Work is

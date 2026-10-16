@@ -59,6 +59,11 @@ for private evidence.
   packet distributions, associated byte ranges, evidence, contradictions, and
   follow-up experiment suggestions. Correlation is never presented as proof of
   causation.
+- Dedicated browser Experiments workspace for independently loading baseline
+  and changed BIN, HEX, PCAP, and PCAPNG captures, selecting flow/direction
+  scopes per side, running cancellable server-side comparisons, reviewing
+  synchronized bounded HEX evidence, promoting ranges to manual annotations,
+  exporting reports, and restoring report-only investigations.
 - Server-owned built-in-demo evaluation identities; arbitrary client-submitted
   comparisons are clearly labeled untrusted.
 
@@ -255,7 +260,8 @@ npm run e2e
 
 The suite starts the real local server, exercises both CRC demos, navigation,
 HEX interaction, schema export/application, editable annotations, undo/redo,
-project export/import, and invalid project handling. Failure screenshots,
+project export/import, controlled experiment run/review/annotation/export/
+restore, independent flow scopes, and invalid project handling. Failure screenshots,
 traces, and console text are written under `test-artifacts/` (ignored by Git);
 packet contents are not written to the console artifact. CI installs Chromium
 with Linux dependencies and uploads those artifacts only on failure.

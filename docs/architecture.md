@@ -55,6 +55,11 @@ BIN / HEX / PCAP / PCAPNG
   declared coordinate system. It pairs comparable messages by capture order,
   reports associated ranges and distribution changes, and records limitations
   and follow-up experiments; it does not claim causation or replace framing.
+- `packetscope/jobs.py` owns both single-capture analysis jobs and controlled
+  experiment jobs. Experiment jobs retain two uploads only until each import
+  completes, apply independent flow/direction scopes server-side, and publish
+  bounded progress, cancellation, provenance, and report snapshots through the
+  same single-worker lifecycle.
 
 The first iteration intentionally uses standard-library parsing and a small
 detector set. Link-layer stream reassembly and advanced CRC families are
@@ -91,6 +96,14 @@ input SHA-256, profile JSON and fingerprint, completeness, tested algorithms,
 candidate count, and constraints that stopped bounded searches. The confidence
 and ranking fields are explicitly labelled heuristic and are not calibrated
 probabilities.
+
+Controlled experiment reports additionally retain exact baseline and changed
+upload SHA-256 values, effective formats, packet counts, independent
+flow/direction selections, bounded changed-byte evidence, message
+distributions, contradictions, limitations, and deterministic follow-up
+suggestions. The browser experiment workspace stores only the report and
+manual annotations when exporting/restoring; it never embeds original capture
+buffers.
 
 Scalar detector candidates may share an `interpretation_group` when their byte
 ranges overlap. The group records viable widths and endianness without choosing
