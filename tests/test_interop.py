@@ -28,6 +28,26 @@ class InteroperabilityExportTests(unittest.TestCase):
         self.assertTrue(any("application_payload" in warning for warning in result["warnings"]))
         self.assertIn("return demo_protocol", result["content"])
 
+    def test_v2_static_fields_export_and_dynamic_constructs_warn_without_crashing(self):
+        schema = {
+            "schema_version": 2,
+            "name": "V2 protocol",
+            "coordinate_system": "raw_packet",
+            "fields": [
+                {"id": "kind", "name": "Kind", "type": "uint8", "offset": 0, "length": 1, "endian": "big"},
+                {"id": "payload", "name": "Payload", "type": "bytes", "offset": {"field": "kind", "add": 1}, "length": {"field": "kind"}},
+                {"id": "nested", "name": "Nested", "type": "struct", "offset": 4, "fields": [{"id": "child", "name": "Child", "type": "uint8", "offset": 0, "length": 1}]},
+            ],
+            "relationships": [{"id": "checksum", "kind": "checksum", "algorithm": "CRC-32"}],
+        }
+        kaitai = export_kaitai(schema)
+        lua = export_wireshark_lua(schema)
+        self.assertIn("id: v2_protocol", kaitai["content"])
+        self.assertIn("fields.kind", lua["content"])
+        self.assertTrue(any("dynamic offset" in warning for warning in kaitai["warnings"]))
+        self.assertTrue(any("nested/array" in warning for warning in lua["warnings"]))
+        self.assertTrue(any("checksum relationship" in warning for warning in kaitai["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

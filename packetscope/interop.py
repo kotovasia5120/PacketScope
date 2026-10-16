@@ -11,7 +11,8 @@ def export_kaitai(schema: dict) -> dict:
     warnings: list[str] = []
     lines = ["meta:", f"  id: {safe_identifier(checked.get('name', 'packetscope_protocol'))}", "  endian: be", "seq:"]
     cursor = 0
-    for index, field in enumerate(sorted(checked["fields"], key=lambda item: (item["offset"], item["name"]))):
+    export_fields = _representable_fields(checked, warnings)
+    for index, field in enumerate(sorted(export_fields, key=lambda item: (item["offset"], item["name"]))):
         offset, width = field["offset"], field["width"]
         if field["coordinate_system"] != "raw_packet":
             warnings.append(f"field {field['name']} uses application_payload coordinates and was not emitted")
@@ -40,7 +41,8 @@ def export_wireshark_lua(schema: dict) -> dict:
         f"local fields = {{}}",
     ]
     emitted: list[tuple[str, dict]] = []
-    for index, field in enumerate(sorted(checked["fields"], key=lambda item: (item["offset"], item["name"]))):
+    export_fields = _representable_fields(checked, warnings)
+    for index, field in enumerate(sorted(export_fields, key=lambda item: (item["offset"], item["name"]))):
         identifier = safe_identifier(field["name"], fallback=f"field_{index}")
         if field["coordinate_system"] != "raw_packet":
             warnings.append(f"field {field['name']} uses application_payload coordinates and needs a transport payload dissector")
@@ -61,6 +63,40 @@ def export_wireshark_lua(schema: dict) -> dict:
     return {"format": "wireshark-lua", "content": "\n".join(lines) + "\n", "warnings": sorted(set(warnings))}
 
 
+def _representable_fields(schema: dict, warnings: list[str]) -> list[dict]:
+    """Project V2 fields only when the flat exporters preserve their meaning.
+
+    The current generators emit flat, bounded ranges. Static V2 fields can be
+    projected to that shape; dynamic ranges, conditions, arrays, and nested
+    structures are reported and omitted instead of becoming misleading parser
+    definitions. V1 fields already have the required shape.
+    """
+    if schema.get("schema_version") == 1:
+        return list(schema["fields"])
+    result: list[dict] = []
+    for field in schema.get("fields", []):
+        name = field.get("name", field.get("id", "field"))
+        if field.get("fields") or field.get("array") or field.get("definition"):
+            warnings.append(f"field {name} uses nested/array structure and was not emitted")
+            continue
+        if field.get("presence") is not True:
+            warnings.append(f"field {name} uses a conditional presence rule and was not emitted")
+            continue
+        offset = field.get("offset")
+        length = field.get("length")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            warnings.append(f"field {name} uses a dynamic offset and was not emitted")
+            continue
+        if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
+            warnings.append(f"field {name} uses a dynamic length and was not emitted")
+            continue
+        result.append({**field, "offset": offset, "width": length})
+    for relationship in schema.get("relationships", []):
+        relationship_id = relationship.get("id", "relationship") if isinstance(relationship, dict) else "relationship"
+        warnings.append(f"checksum relationship {relationship_id} is descriptive and was not emitted")
+    return result
+
+
 def safe_identifier(value: object, *, fallback: str = "field") -> str:
     result = re.sub(r"[^A-Za-z0-9_]", "_", str(value).strip()).strip("_").lower()
     if not result:
@@ -74,10 +110,20 @@ def _kaitai_type(field: dict, warnings: list[str]) -> str:
     type_name = str(field.get("type", "custom")).upper()
     width = field["width"]
     endian = field.get("endian")
+    if type_name in {"UINT8", "U8", "BYTE"} and width == 1:
+        return "u1"
+    if type_name in {"UINT16", "U16"} and width == 2:
+        return "u2le" if endian == "little" else "u2"
     if type_name == "UINT32" and width == 4:
         return "u4le" if endian == "little" else "u4"
     if type_name == "UINT64" and width == 8:
         return "u8le" if endian == "little" else "u8"
+    if type_name in {"INT8", "I8"} and width == 1:
+        return "s1"
+    if type_name in {"INT16", "I16"} and width == 2:
+        return "s2le" if endian == "little" else "s2"
+    if type_name == "INT32" and width == 4:
+        return "s4le" if endian == "little" else "s4"
     if type_name == "INT64" and width == 8:
         return "s8le" if endian == "little" else "s8"
     if type_name not in {"CUSTOM", "MESSAGE_TYPE", "LENGTH_FIELD", "BIT_FLAGS"}:
@@ -90,10 +136,20 @@ def _kaitai_type(field: dict, warnings: list[str]) -> str:
 def _lua_type(field: dict, warnings: list[str]) -> str:
     type_name = str(field.get("type", "custom")).upper()
     width = field["width"]
+    if type_name in {"UINT8", "U8", "BYTE"} and width == 1:
+        return "uint8"
+    if type_name in {"UINT16", "U16"} and width == 2:
+        return "uint16"
     if type_name in {"UINT32", "LENGTH_FIELD"} and width == 4:
         return "uint32"
     if type_name in {"UINT64", "INT64"} and width == 8:
         return "uint64"
+    if type_name in {"INT8", "I8"} and width == 1:
+        return "int8"
+    if type_name in {"INT16", "I16"} and width == 2:
+        return "int16"
+    if type_name == "INT32" and width == 4:
+        return "int32"
     if type_name == "CUSTOM":
         return "bytes"
     if width == 1:

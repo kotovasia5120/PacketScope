@@ -49,7 +49,9 @@ class SchemaV2Tests(unittest.TestCase):
         present = apply_schema(schema, [Packet(0, b"\x01\x00\x09")])["values"][0]["fields"]
         self.assertEqual(present[1]["value"], 9)
         absent = apply_schema(schema, [Packet(0, b"\x00\x00\x09")])["values"][0]["fields"]
-        self.assertEqual(absent[1]["status"], "UNKNOWN")
+        self.assertEqual(absent[1]["status"], "RESOLVED")
+        self.assertFalse(absent[1]["present"])
+        self.assertEqual(absent[1]["diagnostics"][0]["code"], "conditional_absent")
 
     def test_missing_reference_and_cycle_are_diagnostics(self):
         missing = validate_schema({"schema_version": 2, "fields": [

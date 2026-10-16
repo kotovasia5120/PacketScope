@@ -924,7 +924,11 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
         if store: values[field["id"]] = result
         return output, result
     if not bool(presence.get("value")):
-        result = _v2_status_result("UNKNOWN", diagnostics=[_v2_diag("UNKNOWN", "conditional_absent", "field is not present because its condition is false")])
+        # A resolved false condition is a legitimate absence, not an
+        # unresolved dependency. Keep the field status RESOLVED while
+        # retaining an explicit diagnostic so consumers can distinguish it
+        # from UNKNOWN (condition could not be evaluated).
+        result = _v2_status_result("RESOLVED", diagnostics=[_v2_diag("RESOLVED", "conditional_absent", "field is not present because its condition is false")])
         output = _v2_public_field(field, result, present=False)
         if store: values[field["id"]] = result
         return output, result
