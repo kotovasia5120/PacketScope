@@ -24,7 +24,7 @@ class InteroperabilityExportTests(unittest.TestCase):
     def test_lua_export_contains_bounds_checks_and_unsupported_warning(self):
         result = export_wireshark_lua(self.schema)
         self.assertIn("buffer:len() >= 6", result["content"])
-        self.assertIn("subtree:add(fields.counter", result["content"])
+        self.assertIn("subtree:add_le(fields.counter", result["content"])
         self.assertTrue(any("application_payload" in warning for warning in result["warnings"]))
         self.assertIn("return demo_protocol", result["content"])
 

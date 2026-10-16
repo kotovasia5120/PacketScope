@@ -55,7 +55,8 @@ def export_wireshark_lua(schema: dict) -> dict:
     lines.extend([f"function {protocol}.dissector(buffer, pinfo, tree)", f"  local subtree = tree:add({protocol}, buffer())"])
     for identifier, field in emitted:
         offset, width = field["offset"], field["width"]
-        lines.extend([f"  if buffer:len() >= {offset + width} then", f"    subtree:add(fields.{identifier}, buffer({offset}, {width}))", "  end"])
+        add_method = "add_le" if field.get("endian") == "little" and _is_numeric_field(field) else "add"
+        lines.extend([f"  if buffer:len() >= {offset + width} then", f"    subtree:{add_method}(fields.{identifier}, buffer({offset}, {width}))", "  end"])
     lines.extend(["end", f"return {protocol}"])
     return {"format": "wireshark-lua", "content": "\n".join(lines) + "\n", "warnings": sorted(set(warnings))}
 
@@ -90,10 +91,16 @@ def _lua_type(field: dict, warnings: list[str]) -> str:
     type_name = str(field.get("type", "custom")).upper()
     width = field["width"]
     if type_name in {"UINT32", "LENGTH_FIELD"} and width == 4:
-        return "uint"
+        return "uint32"
     if type_name in {"UINT64", "INT64"} and width == 8:
         return "uint64"
-    if type_name == "CUSTOM" or width == 1:
+    if type_name == "CUSTOM":
         return "bytes"
+    if width == 1:
+        return "uint8"
     warnings.append(f"field {field['name']} type/width is not mapped exactly in Lua and was emitted as bytes")
     return "bytes"
+
+
+def _is_numeric_field(field: dict) -> bool:
+    return str(field.get("type", "")).upper() in {"UINT32", "UINT64", "INT64", "LENGTH_FIELD"} or field.get("width") == 1
