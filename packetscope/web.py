@@ -27,6 +27,7 @@ from packetscope.evaluation import evaluate_result
 from packetscope.flows import flows_as_dict, group_flows, normalize_direction
 from packetscope.jobs import AnalysisManager
 from packetscope.reassembly import reconstruct_tcp_streams
+from packetscope.schema import loads_schema, validate_capture_against_schema
 
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -135,6 +136,9 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/reconstruct":
             self._reconstruct_streams()
+            return
+        if self.path == "/api/schema/validate":
+            self._validate_schema_capture()
             return
         if self.path != "/api/analyze":
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -373,6 +377,39 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "capture exceeds available processing budget"})
         except Exception:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "stream reconstruction failed"})
+
+    def _validate_schema_capture(self) -> None:
+        content_length = self._content_length()
+        if content_length is None:
+            self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return
+        if content_length < 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid"})
+            return
+        if content_length > self.server.limits.max_input_bytes:  # type: ignore[attr-defined]
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "validation request exceeds size limit"})
+            return
+        body = self._read_body(content_length)
+        if body is None:
+            return
+        if len(body) != content_length:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
+            return
+        try:
+            name, format_name, payload, schema = _multipart_schema_validation(self.headers.get("Content-Type", ""), body)
+            imported = import_bytes(name, payload, format_name, self.server.limits)  # type: ignore[attr-defined]
+            report = validate_capture_against_schema(schema, imported.packets, max_packets=self.server.limits.max_packets)  # type: ignore[attr-defined]
+            report["source"] = {"name": name, "format": imported.format, "packet_count": len(imported.packets), "byte_count": len(payload)}
+            report["warnings"] = _merge_warnings([], imported.warnings)
+            self._json(HTTPStatus.OK, report)
+        except PacketScopeError as exc:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE if isinstance(exc, InputLimitError) else HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
+        except (ValueError, UnicodeDecodeError, struct.error, IndexError, OverflowError, RecursionError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid schema or capture"})
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "validation exceeds available processing budget"})
+        except Exception:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "schema validation failed"})
 
     def log_message(self, _format: str, *_args: object) -> None:
         # Captures can contain secrets; the local server intentionally stays quiet.
@@ -708,6 +745,45 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bo
             raise ValueError("multipart file payload is invalid")
         return filename[:200], requested_format, payload, analyze_raw, selected_direction, flow_id
     raise ValueError("multipart field 'file' is required")
+
+
+def _multipart_schema_validation(content_type: str, body: bytes) -> tuple[str, str, bytes, dict]:
+    if any(character in content_type for character in "\r\n") or len(content_type) > 1024:
+        raise ValueError("invalid multipart content type")
+    if not content_type.lower().startswith("multipart/form-data"):
+        raise ValueError("Content-Type must be multipart/form-data")
+    message = BytesParser(policy=policy.default).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode() + body
+    )
+    if not message.is_multipart():
+        raise ValueError("invalid multipart body")
+    file_part = None
+    schema_value = None
+    format_name = "auto"
+    field_count = 0
+    for part in message.iter_parts():
+        field_count += 1
+        if field_count > 8:
+            raise ValueError("schema validation form has too many fields")
+        field_name = part.get_param("name", header="content-disposition")
+        if field_name is not None and len(field_name) > 64:
+            raise ValueError("multipart field name exceeds length limit")
+        if field_name == "file":
+            if file_part is not None:
+                raise ValueError("schema validation requires one file")
+            file_part = part
+        elif field_name == "format":
+            format_name = (part.get_content() or "auto").strip().lower()
+            if format_name not in {"auto", "bin", "hex", "pcap", "pcapng"}:
+                raise ValueError("schema validation format is invalid")
+        elif field_name == "schema":
+            schema_value = part.get_content()
+    if file_part is None or schema_value is None:
+        raise ValueError("schema validation requires file and schema fields")
+    payload = file_part.get_payload(decode=True)
+    if not isinstance(payload, bytes):
+        raise ValueError("multipart file payload is invalid")
+    return _safe_upload_name(file_part.get_filename() or "upload.bin"), format_name, payload, loads_schema(schema_value)
 
 
 def _multipart_experiment(content_type: str, body: bytes) -> dict:

@@ -4,7 +4,7 @@ import unittest
 
 from packetscope.analysis import analyze_packets
 from packetscope.models import Packet
-from packetscope.schema import apply_schema, export_schema, loads_schema, validate_schema
+from packetscope.schema import apply_schema, export_schema, loads_schema, validate_capture_against_schema, validate_schema
 
 
 class SchemaTests(unittest.TestCase):
@@ -102,6 +102,20 @@ class SchemaTests(unittest.TestCase):
             "-9223372036854775808", "-9223372036854775808",
         ])
         self.assertTrue(all(field["value_encoding"] == "decimal_string" for field in fields))
+
+    def test_capture_validation_separates_incomplete_and_constraint_failures(self):
+        schema = validate_schema({
+            "schema_version": 1,
+            "fields": [
+                {"name": "kind", "type": "UINT32", "offset": 0, "width": 4, "endian": "big", "constraints": {"allowed": ["1"]}},
+                {"name": "missing", "offset": 10, "width": 2, "endian": "unknown"},
+            ],
+        })
+        report = validate_capture_against_schema(schema, [Packet(0, b"\x00\x00\x00\x02")])
+        self.assertEqual(report["summary"]["packet_count"], 1)
+        self.assertEqual(report["summary"]["constraint_violations"], 1)
+        self.assertEqual(report["summary"]["missing_fields"], 1)
+        self.assertEqual(report["packets"][0]["status"], "violated")
 
 
 if __name__ == "__main__":

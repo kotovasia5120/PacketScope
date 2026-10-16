@@ -84,6 +84,18 @@ def experiment_multipart(
     return body, f"multipart/form-data; boundary={boundary}"
 
 
+def schema_validation_multipart(payload: bytes, schema: dict) -> tuple[bytes, str]:
+    boundary = "----PacketScopeSchema" + uuid.uuid4().hex
+    body = (
+        (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="sample.bin"\r\n'
+         "Content-Type: application/octet-stream\r\n\r\n").encode() + payload +
+        (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="format"\r\n\r\nbin\r\n'
+         f'--{boundary}\r\nContent-Disposition: form-data; name="schema"\r\n\r\n{json.dumps(schema)}\r\n').encode() +
+        f'--{boundary}--\r\n'.encode()
+    )
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
 class WebIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.server = PacketScopeServer(("127.0.0.1", 0), Limits(max_input_bytes=512))
@@ -524,6 +536,16 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(report["source"]["format"], "pcap")
         self.assertTrue(any(stream["packet_to_stream"] for stream in report["streams"]))
         self.assertTrue(any(stream["gaps"] or stream["overlaps"] for stream in report["streams"]))
+
+    def test_schema_validation_endpoint_returns_per_packet_diagnostics(self):
+        self.server.limits = Limits(max_input_bytes=4096)
+        self.server.analysis_manager.limits = self.server.limits
+        schema = {"schema_version": 1, "fields": [{"name": "value", "type": "UINT32", "offset": 0, "width": 4, "endian": "big", "constraints": {"minimum": 2}}]}
+        body, content_type = schema_validation_multipart(b"\x00\x00\x00\x01", schema)
+        with self.request("/api/schema/validate", "POST", body, content_type) as response:
+            report = json.load(response)
+        self.assertEqual(report["summary"]["constraint_violations"], 1)
+        self.assertEqual(report["packets"][0]["status"], "violated")
 
 
 if __name__ == "__main__":

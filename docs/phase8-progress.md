@@ -51,10 +51,13 @@ future work.
 
 ## Phase 9 — Schema workbench and validation
 
-**Status: NOT_STARTED for the new interactive editor.** The versioned schema
-export/application path from Phase 7 remains intact and is covered by the
-existing tests. Do not replace it; extend it with bounded dependencies and a
-GUI editor in the next milestone.
+**Status: PARTIAL.** The existing version 1 schema path remains intact. The
+browser now has a dependency-free reviewed-field editor for bounded fixed
+ranges, applies those fields to the current capture, and calls
+`/api/schema/validate` for per-packet incomplete/constraint/unsupported
+diagnostics. Dependency-aware offsets, arrays, conditions, nested structures,
+and length/CRC relationships are still not implemented; the editor does not
+claim those constructs yet.
 
 ## Phase 10 — TCP reconstruction and interoperability
 

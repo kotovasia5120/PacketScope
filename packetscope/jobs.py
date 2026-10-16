@@ -17,7 +17,7 @@ import uuid
 from typing import Any, Callable
 
 from packetscope.analysis import analyze_packets
-from packetscope.experiments import ExperimentCancelled, compare_controlled_change
+from packetscope.experiments import compare_controlled_change
 from packetscope.flows import group_flows, normalize_direction, select_flow_packets
 from packetscope.importers import import_bytes
 from packetscope.models import Limits

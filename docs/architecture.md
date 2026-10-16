@@ -40,7 +40,9 @@ BIN / HEX / PCAP / PCAPNG
 - `packetscope/export.py` owns the stable JSON shape and annotation merge.
 - `packetscope/schema.py` validates and applies the versioned, non-executable
   protocol schema. It permits overlapping and variable-range descriptions and
-  only reads bounded imported bytes; it never generates parser code.
+  only reads bounded imported bytes; it never generates parser code. Its
+  capture-validation report separates unavailable/incomplete fields from
+  declared constraint violations and unsupported checksum descriptions.
 - `packetscope/web.py` exposes bounded HTTP operations and serves static assets.
   It defaults to private local mode; an explicit `public-demo` mode changes the
   health/UI privacy contract so hosted uploads are disclosed to users.

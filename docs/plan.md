@@ -139,6 +139,11 @@ The first P0 browser milestone is implemented in the current continuation:
 extensions are partial; repeated-experiment identity and richer statistics are
 not yet implemented. See [`docs/phase8-progress.md`](phase8-progress.md).
 
+The first Phase 9 slice is also implemented: the browser can add reviewed
+fixed-range fields to a version 1 schema, apply them to the current capture,
+and request per-packet validation diagnostics. Dependency-aware structures,
+arrays, conditionals, and length/CRC relationships remain future work.
+
 ## Phase 10 — bounded TCP reconstruction slice
 
 Implemented as an independent transport-layer slice:

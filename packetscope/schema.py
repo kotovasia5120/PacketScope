@@ -139,6 +139,69 @@ def apply_schema(schema: dict[str, Any], packets: Iterable[Packet], max_packets:
     return {"schema_version": SCHEMA_VERSION, "field_count": len(checked["fields"]), "packet_count": len(packet_list), "values": values}
 
 
+def validate_capture_against_schema(
+    schema: dict[str, Any],
+    packets: Iterable[Packet],
+    *,
+    max_packets: int = 100_000,
+) -> dict[str, Any]:
+    """Return per-packet diagnostics without treating incomplete input as a violation."""
+    checked = validate_schema(schema)
+    applied = apply_schema(checked, packets, max_packets=max_packets)
+    diagnostics: list[dict[str, Any]] = []
+    decoded_packets = 0
+    missing_fields = 0
+    constraint_violations = 0
+    unsupported_fields = 0
+    for packet in applied["values"]:
+        missing: list[str] = []
+        violations: list[dict[str, Any]] = []
+        unsupported: list[str] = []
+        for field, value in zip(checked["fields"], packet["fields"]):
+            if not value["available"]:
+                missing.append(field["name"])
+                continue
+            constraints = field.get("constraints", {})
+            if not isinstance(constraints, dict):
+                constraints = {}
+            if str(field.get("type", "")).upper() in {"CRC", "CHECKSUM"} and not constraints.get("algorithm"):
+                unsupported.append(field["name"])
+                continue
+            number = _numeric_value(value["value"])
+            allowed = constraints.get("allowed", constraints.get("enum"))
+            if isinstance(allowed, list) and value["value"] not in {str(item) for item in allowed}:
+                violations.append({"field": field["name"], "reason": "value is outside the declared enumeration"})
+            if number is not None:
+                for key, comparator, reason in (("minimum", lambda actual, expected: actual < expected, "value is below the minimum"), ("maximum", lambda actual, expected: actual > expected, "value is above the maximum")):
+                    if key in constraints:
+                        try:
+                            expected = int(constraints[key])
+                        except (TypeError, ValueError):
+                            unsupported.append(field["name"])
+                            continue
+                        if comparator(number, expected):
+                            violations.append({"field": field["name"], "reason": reason})
+        status = "ok" if not missing and not violations and not unsupported else "incomplete" if missing and not violations else "violated" if violations else "unsupported"
+        if status == "ok":
+            decoded_packets += 1
+        missing_fields += len(missing)
+        constraint_violations += len(violations)
+        unsupported_fields += len(unsupported)
+        diagnostics.append({"packet_id": packet["packet_id"], "status": status, "missing_fields": missing, "constraint_violations": violations, "unsupported_fields": unsupported})
+    return {
+        "schema_version": checked["schema_version"],
+        "summary": {
+            "packet_count": len(diagnostics),
+            "decoded_packets": decoded_packets,
+            "incomplete_packets": sum(item["status"] == "incomplete" for item in diagnostics),
+            "missing_fields": missing_fields,
+            "constraint_violations": constraint_violations,
+            "unsupported_fields": unsupported_fields,
+        },
+        "packets": diagnostics,
+    }
+
+
 def dumps_schema(schema: dict[str, Any]) -> str:
     return json.dumps(validate_schema(schema), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -191,3 +254,12 @@ def _schema_value(raw: bytes, field: dict[str, Any], available: bool) -> tuple[A
         signed = field["type"].upper() == "INT64"
         return str(int.from_bytes(raw, field["endian"], signed=signed)), "decimal_string"
     return raw.hex(), "hex"
+
+
+def _numeric_value(value: Any) -> int | None:
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None

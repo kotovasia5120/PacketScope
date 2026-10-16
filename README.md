@@ -59,6 +59,10 @@ for private evidence.
 - Versioned, non-executable protocol schema export with inferred/manual origin,
   review status, evidence references, constraints, limitations, overlapping
   fields, and bounded byte validation.
+- Browser schema editor for adding reviewed fixed-range fields and validating
+  the current independent capture with per-packet incomplete/constraint/
+  unsupported diagnostics. Schema descriptions remain data-only; no parser
+  code is executed.
 - Bounded baseline-versus-controlled-change comparison via the CLI, with
   packet distributions, associated byte ranges, evidence, contradictions, and
   follow-up experiment suggestions. Correlation is never presented as proof of
