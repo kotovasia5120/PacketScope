@@ -3,7 +3,7 @@
 ## Data flow
 
 ```text
-BIN / HEX / PCAP / PCAPNG
+BIN / HEX / PCAP / PCAPNG / NORMALIZED JSONL
           |
           v
    bounded import layer
@@ -31,6 +31,36 @@ BIN / HEX / PCAP / PCAPNG
 
 - `packetscope/importers/` validates file formats and produces packets. It does
   not decide what a field means.
+- `packetscope/capture_formats.py` is a separate bounded message-oriented
+  importer for captures that already provide message boundaries. Its
+  normalized JSON-lines contract has one object per message and preserves a
+  finite timestamp, explicit direction, source identity, exact raw bytes
+  (canonical padded base64), capture order, and an `explicit-record` boundary
+  marker. It never sorts by timestamp, splits a byte stream, or infers a
+  missing UART/USB frame boundary. Duplicate JSON keys, non-canonical base64,
+  malformed records, packet/message/input limits, and oversized output are
+  rejected with the existing `FormatError`/`InputLimitError` types.
+- The isolated UART text representation is one UTF-8 line per explicit
+  message: `timestamp<TAB>direction<TAB>source<TAB>base64`. The isolated CAN
+  representation uses `timestamp<TAB>direction<TAB>source<TAB>can_id#payload_hex`;
+  payload bytes remain raw and the bounded numeric CAN identifier is retained
+  as `metadata.can_id`. CAN data is capped at 64 bytes, and neither helper
+  guesses direction, classic-vs-FD mode, or message boundaries. A USB bulk or
+  interrupt capture can use the normalized JSONL contract with a source such
+  as `usb:1-2`; USB descriptor and transfer framing are intentionally outside
+  this importer.
+
+The canonical JSONL record is compact and stable, for example:
+
+```json
+{"boundary":"explicit-record","direction":"rx","index":0,"metadata":{},"raw":"AAEC","raw_encoding":"base64","source":"uart0","timestamp":12.5}
+```
+
+`index` is capture order rather than a timestamp sort key. `metadata` is a
+bounded scalar object for transport attributes such as `can_id`; it is empty
+for ordinary UART/USB records. Re-serializing an imported collection emits
+the same key ordering and base64 spelling. A continuous stream must be
+framed by the capture producer before it can be represented by this format.
 - `packetscope/analysis/` compares aligned bytes and emits cautious,
   evidence-backed hypotheses. It never mutates source data.
 - `packetscope/protocols.py` decodes bounded Ethernet, IPv4/IPv6, TCP, and UDP
