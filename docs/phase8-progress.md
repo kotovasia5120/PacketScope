@@ -79,7 +79,7 @@ full dependency-aware interoperability remain open.
 
 **Status: PARTIAL; first bounded vertical slice is complete.**
 
-Implemented in commits `30c3c35` and `bcbad73`:
+Implemented in commits `30c3c35`, `bcbad73`, `5213fcb`, and `d260a91`:
 
 - V1 schemas still load, validate, apply, and export through the existing
   shape. `migrate_schema()` produces deterministic V2 stable field IDs without
@@ -94,13 +94,18 @@ Implemented in commits `30c3c35` and `bcbad73`:
   checksum relationship descriptors, and packet/field/expression/array
   budgets are represented. A false condition is a resolved absence; an
   unresolved condition remains `UNKNOWN`.
+- V2 checksum relationships use the existing explicit CRC/checksum engine
+  through an allow-list. CRC-8, CRC-16/CCITT-FALSE, CRC-16/MODBUS,
+  CRC-32/ISO-HDLC, XOR-8, ADDITIVE-8, and ADDITIVE-16 support static,
+  end-relative, field-targeted, include/exclude covered ranges, byte order,
+  and deterministic `valid`, `invalid`, `insufficient`, `unsupported`, and
+  `unresolved` results. Incomplete captures are not checksum mismatches.
 - `/api/schema/validate` accepts V2 and returns per-packet field diagnostics.
   The browser applies V1 and V2 schemas, renders nested/array results and
   diagnostics, exports V2, and has real Chromium coverage for the first slice.
 
-Remaining Phase 11 work includes richer nested-definition evaluation,
-constraint enforcement for V2 values, and executing supported checksum
-relationships using the existing CRC engine without duplicating it.
+Remaining Phase 11 work includes richer nested-definition evaluation and
+constraint enforcement for V2 values.
 
 ## Phase 12 — Browser Schema V2 workbench
 
@@ -125,10 +130,10 @@ No framing boundary is inferred.
 
 ## Exact continuation instruction
 
-Next: add V2 checksum validation and constraint diagnostics, then complete the
-independent-capture browser validation view and reusable nested-definition
-editor. Preserve the experiment and stream workspaces and run `make test`,
-JavaScript syntax checks, and `npm run e2e` after each thematic change.
+Next: add V2 constraint diagnostics, then complete the independent-capture
+browser validation view and reusable nested-definition editor. Preserve the
+experiment and stream workspaces and run `make test`, JavaScript syntax checks,
+and `npm run e2e` after each thematic change.
 
 ## Release blockers
 

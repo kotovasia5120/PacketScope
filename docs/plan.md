@@ -229,7 +229,7 @@ only the documented normalized representation.
 
 Verified checkpoint:
 
-- `make test`: **PASS — 128 Python tests**.
+- `make test`: **PASS — 132 Python tests**.
 - `node --check packetscope/static/app.js`: **PASS**.
 - `node --check packetscope/static/schema-values.js`: **PASS**.
 - `node --check e2e/schema-v2.spec.js`: **PASS**.
@@ -238,10 +238,11 @@ Verified checkpoint:
 - `git diff --check`: **PASS**.
 
 Exact commits: `30c3c35` (Schema V2 engine), `8d80f90` (browser Schema V2
-workbench), `6281253` (normalized capture importer), and `bcbad73` (V2
-interoperability and resolved conditional-absence semantics).
+workbench), `6281253` (normalized capture importer), `bcbad73` (V2
+interoperability and resolved conditional-absence semantics), `5213fcb` (V2
+checksum relationships), and `d260a91` (browser checksum validation summary).
 
-The next safe step is checksum/constraint validation plus the dedicated
+The next safe step is V2 constraint validation plus the dedicated
 independent-capture schema review surface. Docker and hosted CI remain
 unverified because this environment has no authorized Docker daemon or hosted
 run.

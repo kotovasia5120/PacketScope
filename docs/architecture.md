@@ -68,11 +68,15 @@ framed by the capture producer before it can be represented by this format.
   reassemble packets. Unknown link types remain raw and are marked
   `unsupported_link_type`.
 - `packetscope/export.py` owns the stable JSON shape and annotation merge.
-- `packetscope/schema.py` validates and applies the versioned, non-executable
-  protocol schema. It permits overlapping and variable-range descriptions and
-  only reads bounded imported bytes; it never generates parser code. Its
-  capture-validation report separates unavailable/incomplete fields from
-  declared constraint violations and unsupported checksum descriptions.
+- `packetscope/schema.py` validates and applies versioned, non-executable
+  protocol schemas. V1 fixed-range schemas remain compatible; V2 adds stable
+  IDs, declarative dependency expressions, dynamic offsets/lengths, conditions,
+  arrays, nested structures, reusable definitions, and explicit evaluation
+  budgets/statuses. It only reads bounded imported bytes and never generates
+  or executes parser code. V2 checksum relationships use the existing
+  allow-listed CRC/checksum engine with explicit ranges, byte order, and
+  valid/invalid/insufficient/unsupported/unresolved results. Capture
+  validation separates unavailable/incomplete data from protocol violations.
 - `packetscope/web.py` exposes bounded HTTP operations and serves static assets.
   It defaults to private local mode; an explicit `public-demo` mode changes the
   health/UI privacy contract so hosted uploads are disclosed to users.

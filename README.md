@@ -249,7 +249,7 @@ and unresolved gates are recorded in [`docs/phase7-progress.md`](docs/phase7-pro
 
 | Command or gate | Result |
 | --- | --- |
-| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 128 tests |
+| `make PYTHON=./.runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12 test` | **PASS** — 132 tests |
 | `python3 -m unittest discover -s tests -p 'test_*.py'` | **BLOCKED** — host Python 3.11.2 fails the pinned-runtime gate |
 | `node --check packetscope/static/app.js` plus E2E JS files | **PASS** |
 | `npm run e2e` with local Chromium server | **PASS** — 9 browser tests, including Schema V2, experiments, schema validation, and TCP reconstruction |
