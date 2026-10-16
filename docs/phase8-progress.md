@@ -32,7 +32,7 @@ Implemented:
 
 Measured acceptance evidence:
 
-- Python suite: **PASS — 111 tests** with `make test`.
+- Python suite: **PASS — 114 tests** with `make test`.
 - JavaScript syntax: **PASS** with `node --check packetscope/static/app.js`.
 - Real Chromium: **PASS — 8 tests** with `npm run e2e` using the pinned
   Python runtime, including two experiment workflows, schema construction/
