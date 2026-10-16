@@ -44,3 +44,19 @@ test("schema application returns null for unavailable or truncated values", () =
   assert.equal(truncated.available, false);
   assert.equal(truncated.value, null);
 });
+
+test("a false condition is a resolved absence, not an unknown dependency", () => {
+  const schema = {
+    schema_version: 2,
+    coordinate_system: "raw_packet",
+    fields: [
+      { id: "flag", name: "Flag", type: "uint8", offset: 0, length: 1, endian: "big" },
+      { id: "optional", name: "Optional", type: "uint8", offset: 1, length: 1, endian: "big", presence: { op: "eq", args: [{ field: "flag" }, 1] } },
+    ],
+  };
+  const optional = apply(schema, [{ index: 0, raw_payload: "0007" }])[0].fields[1];
+  assert.equal(optional.status, "RESOLVED");
+  assert.equal(optional.present, false);
+  assert.equal(optional.available, false);
+  assert.equal(optional.diagnostics[0].code, "conditional_absent");
+});

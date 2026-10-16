@@ -547,6 +547,27 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(report["summary"]["constraint_violations"], 1)
         self.assertEqual(report["packets"][0]["status"], "violated")
 
+    def test_schema_validation_endpoint_applies_v2_dependencies_and_conditional_absence(self):
+        self.server.limits = Limits(max_input_bytes=4096)
+        self.server.analysis_manager.limits = self.server.limits
+        schema = {
+            "schema_version": 2,
+            "coordinate_system": "raw_packet",
+            "fields": [
+                {"id": "length", "name": "Length", "type": "uint8", "offset": 0, "length": 1, "endian": "big"},
+                {"id": "payload", "name": "Payload", "type": "bytes", "offset": 1, "length": {"field": "length"}},
+                {"id": "optional", "name": "Optional", "type": "uint8", "offset": {"field": "length", "add": 1}, "length": 1, "endian": "big", "presence": {"op": "eq", "args": [{"field": "length"}, 3]}},
+            ],
+        }
+        body, content_type = schema_validation_multipart(b"\x01x\x07", schema)
+        with self.request("/api/schema/validate", "POST", body, content_type) as response:
+            report = json.load(response)
+        self.assertEqual(report["summary"]["decoded_packets"], 1)
+        self.assertEqual(report["packets"][0]["status"], "ok")
+        optional = report["packets"][0]["fields"][2]
+        self.assertFalse(optional["present"])
+        self.assertEqual(optional["status"], "RESOLVED")
+
     def test_reviewed_schema_exports_are_reported_without_execution(self):
         schema = {"schema_version": 1, "name": "Demo", "fields": [{"name": "header", "type": "custom", "offset": 0, "width": 1, "endian": "unknown", "coordinate_system": "raw_packet"}]}
         body = json.dumps({"schema": schema}).encode()

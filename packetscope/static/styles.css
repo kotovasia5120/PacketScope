@@ -24,7 +24,7 @@ main { width: min(1180px, calc(100% - 48px)); margin: 28px auto 80px; display: g
 .dropzone:hover, .dropzone:focus-within { border-color: var(--accent); background: #102235; }
 .drop-title { font-size: 1.05rem; font-weight: 700; } .drop-subtitle, .muted, .status, .limit-note { color: var(--muted); }
 input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.form-row, .annotation-form { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-top: 18px; } label { display: grid; gap: 6px; color: var(--muted); font-size: .88rem; } select, input:not([type=file]) { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: inherit; }
+ .form-row, .annotation-form { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-top: 18px; } label { display: grid; gap: 6px; color: var(--muted); font-size: .88rem; } select, input:not([type=file]), textarea { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: inherit; } textarea { min-width: 260px; resize: vertical; }
 button { border: 0; border-radius: 8px; padding: 11px 16px; font: inherit; font-weight: 750; color: #0b1220; background: var(--accent); cursor: pointer; } button:hover { filter: brightness(1.08); } button.secondary { color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); } .status { margin: 14px 0 0; min-height: 24px; } .status.error { color: var(--danger); }
 .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; } .metric { background: var(--panel-2); padding: 16px; border-radius: 10px; } .metric strong { display: block; font-size: 1.65rem; } .metric span { color: var(--muted); font-size: .82rem; }
 .workspace-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 20px; } .workspace-grid .panel > select { width: 100%; margin-bottom: 14px; }
@@ -72,6 +72,14 @@ button { border: 0; border-radius: 8px; padding: 11px 16px; font: inherit; font-
 .schema-editor { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; }
 .schema-editor h3 { margin: 0 0 6px; color: var(--accent); }
 .schema-editor .field-row button { padding: 5px 8px; }
+.schema-editor-row { grid-template-columns: minmax(150px,.8fr) minmax(220px,1.2fr) minmax(220px,1.5fr) auto; align-items: center; }
+.schema-value-row { grid-template-columns: minmax(170px,.8fr) minmax(220px,1fr) minmax(240px,1.5fr); }
+.schema-array-item { margin-left: 18px; border-style: dashed; }
+.schema-value-row[class*="depth-"] { border-left: 3px solid var(--accent); }
+.schema-value-row.depth-1, .schema-array-item.depth-1 { margin-left: 18px; }
+.schema-value-row.depth-2, .schema-array-item.depth-2 { margin-left: 36px; }
+.schema-value-row.depth-3, .schema-array-item.depth-3 { margin-left: 54px; }
+.schema-value-row.depth-4, .schema-array-item.depth-4 { margin-left: 72px; }
 @media (max-width: 800px) { .experiment-grid { grid-template-columns: 1fr; } .experiment-evidence-row { grid-template-columns: 56px 1fr 1fr; } }
 
 .button-row,.filter-row,.compare-controls{display:flex;align-items:end;gap:12px;flex-wrap:wrap}.compare-controls{margin-bottom:12px}.compare-controls select[multiple]{min-width:230px}.legend{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;font-size:.78rem}.legend span{padding:3px 8px;border-radius:999px}.identical{background:#203044;color:var(--muted)}.modified{background:#5b4631;color:#ffd99b}.inserted{background:#214c46;color:#9af4d8}.deleted{background:#542e3b;color:#ffb1b6}.hex-line.modified{background:#4b3927}.hex-line.inserted{background:#1b4039}.hex-line.deleted{background:#442733}.hex-line.active-diff{outline:1px solid var(--accent-2);background:#594a26}.hex-line.field-hit{outline:1px solid var(--accent);background:#1c3a3b}.evaluation{margin-top:14px;padding:12px;border:1px solid #2b665c;border-radius:9px;background:#112a2a}.contradictions{margin-top:20px;border-top:1px solid var(--line);padding-top:12px}.contradictions h3{font-size:1rem;color:var(--accent-2)}
