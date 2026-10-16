@@ -58,19 +58,22 @@ GUI editor in the next milestone.
 
 ## Phase 10 — TCP reconstruction and interoperability
 
-**Status: NOT_STARTED.** Existing flow grouping continues to report TCP
-retransmission/out-of-order observations without claiming reassembly. Stream
-reconstruction, conservative framing, Kaitai export, Wireshark Lua export,
-and additional capture formats remain separate milestones.
+**Status: PARTIAL.** `packetscope/reassembly.py` now provides bounded,
+sequence-ordered TCP direction streams with wraparound-aware offsets,
+overlap/retransmission and gap records, timestamps, packet-to-stream mapping,
+and a separate conservative fixed/delimiter/magic/length framing hypothesis
+layer. `/api/reconstruct` and the browser's stream view expose those
+limitations. Kaitai export, Wireshark Lua export, and additional capture
+formats remain separate milestones.
 
 ## Exact continuation instruction
 
 Next: extend the existing schema module with a bounded dependency graph and
 validation diagnostics, then add the interactive editor and real-browser
-coverage. Preserve the experiment workspace and run `make test`, JavaScript
-syntax checks, and `npm run e2e` after each thematic change. Do not mark Phase 9
-complete until a user can construct, apply, and validate a schema in the real
-browser against independent captures.
+coverage. Preserve the experiment and stream workspaces and run `make test`,
+JavaScript syntax checks, and `npm run e2e` after each thematic change. Do not
+mark Phase 9 complete until a user can construct, apply, and validate a schema
+in the real browser against independent captures.
 
 ## Release blockers
 

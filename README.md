@@ -40,6 +40,10 @@ for private evidence.
   reassembly; unsupported link types remain raw and explicitly unsupported.
 - Direction-aware IPv4/IPv6 TCP/UDP flow grouping with packet identity,
   retransmission/out-of-order notes, and explicit no-TCP-reassembly limits.
+- Bounded TCP stream reconstruction as a separate derived view, with sequence
+  ordering, wraparound-aware offsets, overlap/retransmission evidence, gaps,
+  packet-to-stream provenance, and conservative framing candidates. Missing
+  data is never filled silently.
 - Scoped server-side reanalysis for selected flows and directions, with stale
   browser responses ignored and display-only filtering clearly labeled when a
   restored project has no source capture.

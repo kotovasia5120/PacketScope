@@ -139,6 +139,22 @@ The first P0 browser milestone is implemented in the current continuation:
 extensions are partial; repeated-experiment identity and richer statistics are
 not yet implemented. See [`docs/phase8-progress.md`](phase8-progress.md).
 
+## Phase 10 — bounded TCP reconstruction slice
+
+Implemented as an independent transport-layer slice:
+
+- `packetscope/reassembly.py` reconstructs direction-aware TCP payload streams
+  with bounded sequence ordering, wraparound-aware offsets, overlap and gap
+  records, packet/timestamp provenance, and no synthetic bytes.
+- A separate framing helper reports fixed-length, delimiter, magic-byte, and
+  length-prefixed candidates as hypotheses with ambiguity limitations.
+- `/api/reconstruct` and the browser stream panel expose the derived view for
+  an uploaded capture without changing the immutable packet records.
+
+**Status:** Partial. The backend and browser evidence view are implemented and
+covered by unit, HTTP, and Chromium tests. Kaitai/Lua exporters and additional
+capture formats are not started.
+
 ## Continuation plan — reliability and investigation workspace
 
 This is the actionable plan for the post-Phase-7 continuation. Work is

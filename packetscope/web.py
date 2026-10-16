@@ -26,6 +26,7 @@ from packetscope.demo import demo_capture, demo_corpus
 from packetscope.evaluation import evaluate_result
 from packetscope.flows import flows_as_dict, group_flows, normalize_direction
 from packetscope.jobs import AnalysisManager
+from packetscope.reassembly import reconstruct_tcp_streams
 
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -131,6 +132,9 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/experiments":
             self._submit_experiment()
+            return
+        if self.path == "/api/reconstruct":
+            self._reconstruct_streams()
             return
         if self.path != "/api/analyze":
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -336,6 +340,39 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _reconstruct_streams(self) -> None:
+        content_length = self._content_length()
+        if content_length is None:
+            self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return
+        if content_length < 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid"})
+            return
+        if content_length > self.server.limits.max_input_bytes:  # type: ignore[attr-defined]
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "upload exceeds size limit"})
+            return
+        body = self._read_body(content_length)
+        if body is None:
+            return
+        if len(body) != content_length:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "request body is shorter than Content-Length"})
+            return
+        try:
+            name, format_name, payload, _raw, _direction, _flow_id = _multipart_file(self.headers.get("Content-Type", ""), body)
+            imported = import_bytes(name, payload, format_name, self.server.limits)  # type: ignore[attr-defined]
+            report = reconstruct_tcp_streams(imported.packets, limits=self.server.limits)  # type: ignore[attr-defined]
+            report["source"] = {"name": name, "format": imported.format, "packet_count": len(imported.packets), "byte_count": len(payload), "raw_sha256": hashlib.sha256(payload).hexdigest()}
+            report["warnings"] = _merge_warnings([], imported.warnings)
+            self._json(HTTPStatus.OK, report)
+        except PacketScopeError as exc:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE if isinstance(exc, InputLimitError) else HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
+        except (ValueError, UnicodeDecodeError, struct.error, IndexError, OverflowError, RecursionError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid capture"})
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "capture exceeds available processing budget"})
+        except Exception:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "stream reconstruction failed"})
 
     def log_message(self, _format: str, *_args: object) -> None:
         # Captures can contain secrets; the local server intentionally stays quiet.

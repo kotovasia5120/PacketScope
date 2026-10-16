@@ -514,6 +514,17 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(status["result"]["selection"]["baseline_direction"], "forward")
         self.assertEqual(status["result"]["selection"]["changed_direction"], "reverse")
 
+    def test_tcp_reconstruction_endpoint_returns_bounded_stream_provenance(self):
+        self.server.limits = Limits(max_input_bytes=4096, max_response_bytes=64 * 1024)
+        self.server.analysis_manager.limits = self.server.limits
+        body, content_type = multipart(pcap_bytes(), filename="fixture.pcap")
+        with self.request("/api/reconstruct", "POST", body, content_type) as response:
+            report = json.load(response)
+        self.assertEqual(report["stream_count"], 3)
+        self.assertEqual(report["source"]["format"], "pcap")
+        self.assertTrue(any(stream["packet_to_stream"] for stream in report["streams"]))
+        self.assertTrue(any(stream["gaps"] or stream["overlaps"] for stream in report["streams"]))
+
 
 if __name__ == "__main__":
     unittest.main()

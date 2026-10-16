@@ -60,6 +60,10 @@ BIN / HEX / PCAP / PCAPNG
   completes, apply independent flow/direction scopes server-side, and publish
   bounded progress, cancellation, provenance, and report snapshots through the
   same single-worker lifecycle.
+- `packetscope/reassembly.py` reconstructs bounded TCP payload directions as a
+  derived evidence view. It keeps sequence, timestamp, source-packet mapping,
+  overlap, retransmission, and gap records, and its separate framing helper
+  emits only conservative hypotheses.
 
 The first iteration intentionally uses standard-library parsing and a small
 detector set. Link-layer stream reassembly and advanced CRC families are
