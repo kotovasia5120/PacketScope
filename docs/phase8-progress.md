@@ -32,10 +32,11 @@ Implemented:
 
 Measured acceptance evidence:
 
-- Python suite: **PASS — 105 tests** with `make test`.
+- Python suite: **PASS — 111 tests** with `make test`.
 - JavaScript syntax: **PASS** with `node --check packetscope/static/app.js`.
-- Real Chromium: **PASS — 7 tests** with `npm run e2e` using the pinned
-  Python runtime, including two new experiment workflows.
+- Real Chromium: **PASS — 8 tests** with `npm run e2e` using the pinned
+  Python runtime, including two experiment workflows, schema construction/
+  validation, and TCP stream reconstruction in the existing PCAP flow.
 - Controlled comparison cancellation/progress and independent PCAP flow
   scopes have regression coverage in `tests/test_experiments.py`,
   `tests/test_jobs.py`, and `tests/test_web_integration.py`.
