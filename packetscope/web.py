@@ -21,6 +21,7 @@ from packetscope.config import DeploymentConfig, deployment_from_env, format_byt
 from packetscope.errors import FormatError, InputLimitError, PacketScopeError
 from packetscope.export import dumps_result
 from packetscope.importers import import_bytes
+from packetscope.interop import export_kaitai, export_wireshark_lua
 from packetscope.models import Limits
 from packetscope.demo import demo_capture, demo_corpus
 from packetscope.evaluation import evaluate_result
@@ -139,6 +140,12 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/schema/validate":
             self._validate_schema_capture()
+            return
+        if self.path == "/api/schema/export/kaitai":
+            self._export_schema("kaitai")
+            return
+        if self.path == "/api/schema/export/wireshark":
+            self._export_schema("wireshark")
             return
         if self.path != "/api/analyze":
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -410,6 +417,29 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "validation exceeds available processing budget"})
         except Exception:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "schema validation failed"})
+
+    def _export_schema(self, format_name: str) -> None:
+        length = self._content_length()
+        if length is None:
+            self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length is required"})
+            return
+        if length < 0 or length > self.server.limits.max_input_bytes:  # type: ignore[attr-defined]
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "schema export request exceeds size limit"})
+            return
+        body = self._read_body(length)
+        if body is None:
+            return
+        try:
+            value = json.loads(body)
+            schema = loads_schema(json.dumps(value.get("schema") if isinstance(value, dict) else None))
+            report = export_kaitai(schema) if format_name == "kaitai" else export_wireshark_lua(schema)
+            self._json(HTTPStatus.OK, report)
+        except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid protocol schema"})
+        except MemoryError:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "schema export exceeds processing budget"})
+        except Exception:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "schema export failed"})
 
     def log_message(self, _format: str, *_args: object) -> None:
         # Captures can contain secrets; the local server intentionally stays quiet.

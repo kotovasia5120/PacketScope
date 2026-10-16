@@ -547,6 +547,17 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(report["summary"]["constraint_violations"], 1)
         self.assertEqual(report["packets"][0]["status"], "violated")
 
+    def test_reviewed_schema_exports_are_reported_without_execution(self):
+        schema = {"schema_version": 1, "name": "Demo", "fields": [{"name": "header", "type": "custom", "offset": 0, "width": 1, "endian": "unknown", "coordinate_system": "raw_packet"}]}
+        body = json.dumps({"schema": schema}).encode()
+        with self.request("/api/schema/export/kaitai", "POST", body, "application/json") as response:
+            kaitai = json.load(response)
+        with self.request("/api/schema/export/wireshark", "POST", body, "application/json") as response:
+            lua = json.load(response)
+        self.assertEqual(kaitai["format"], "kaitai")
+        self.assertIn("type: bytes", kaitai["content"])
+        self.assertIn("buffer:len()", lua["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

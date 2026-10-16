@@ -68,7 +68,7 @@ test("loads independent flow options for two PCAP captures", async ({ page }) =>
   await expect(page.locator("#experiment-provenance")).toContainText("baseline.pcap");
 });
 
-test("constructs and validates a reviewed schema in the browser", async ({ page }) => {
+test("constructs and validates a reviewed schema in the browser", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.locator("#packet-file").setInputFiles({ name: "schema.bin", mimeType: "application/octet-stream", buffer: Buffer.from([0xaa, 0x01, 0x02, 0x03]) });
   await page.getByRole("button", { name: "Analyze locally" }).click();
@@ -82,6 +82,12 @@ test("constructs and validates a reviewed schema in the browser", async ({ page 
   await page.getByRole("button", { name: "Add field", exact: true }).click();
   await page.getByRole("button", { name: "Apply reviewed schema" }).click();
   await expect(page.locator("#status")).toContainText("Applied reviewed schema");
+  const kaitaiDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export Kaitai .ksy" }).click();
+  await (await kaitaiDownload).saveAs(testInfo.outputPath("reviewed.schema.ksy"));
+  const luaDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export Wireshark Lua" }).click();
+  await (await luaDownload).saveAs(testInfo.outputPath("reviewed.dissector.lua"));
   await page.getByRole("button", { name: "Validate current capture" }).click();
   await expect(page.locator("#status")).toContainText("Schema validation complete");
   await expect(page.locator("#schema-validation")).toContainText("1/1 packet");

@@ -58,7 +58,9 @@ ranges, applies those fields to the current capture, and calls
 `/api/schema/validate` for per-packet incomplete/constraint/unsupported
 diagnostics. Dependency-aware offsets, arrays, conditions, nested structures,
 and length/CRC relationships are still not implemented; the editor does not
-claim those constructs yet.
+claim those constructs yet. Reviewed fixed-range schemas can now export to
+Kaitai Struct and Wireshark Lua text with explicit unsupported warnings; the
+generated text is not executed.
 
 ## Phase 10 — TCP reconstruction and interoperability
 
@@ -69,6 +71,9 @@ and a separate conservative fixed/delimiter/magic/length framing hypothesis
 layer. `/api/reconstruct` and the browser's stream view expose those
 limitations. Kaitai export, Wireshark Lua export, and additional capture
 formats remain separate milestones.
+Kaitai and Wireshark export are now implemented for supported reviewed fixed
+ranges, with deterministic unit/HTTP/browser coverage. Additional formats and
+full dependency-aware interoperability remain open.
 
 ## Exact continuation instruction
 

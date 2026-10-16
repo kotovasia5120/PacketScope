@@ -63,6 +63,9 @@ for private evidence.
   the current independent capture with per-packet incomplete/constraint/
   unsupported diagnostics. Schema descriptions remain data-only; no parser
   code is executed.
+- Reviewed-schema export to bounded Kaitai Struct `.ksy` and Wireshark Lua
+  dissector text with explicit warnings for unsupported coordinates, overlaps,
+  and constructs; generated code is never executed by PacketScope.
 - Bounded baseline-versus-controlled-change comparison via the CLI, with
   packet distributions, associated byte ranges, evidence, contradictions, and
   follow-up experiment suggestions. Correlation is never presented as proof of

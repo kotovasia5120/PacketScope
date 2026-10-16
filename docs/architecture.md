@@ -66,6 +66,10 @@ BIN / HEX / PCAP / PCAPNG
   derived evidence view. It keeps sequence, timestamp, source-packet mapping,
   overlap, retransmission, and gap records, and its separate framing helper
   emits only conservative hypotheses.
+- `packetscope/interop.py` generates data-only Kaitai and Wireshark Lua text
+  from reviewed fixed-range schemas. Unsupported coordinates, overlaps, and
+  non-representable constraints become warnings rather than silently wrong
+  parser definitions.
 
 The first iteration intentionally uses standard-library parsing and a small
 detector set. Link-layer stream reassembly and advanced CRC families are

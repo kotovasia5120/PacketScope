@@ -157,8 +157,9 @@ Implemented as an independent transport-layer slice:
   an uploaded capture without changing the immutable packet records.
 
 **Status:** Partial. The backend and browser evidence view are implemented and
-covered by unit, HTTP, and Chromium tests. Kaitai/Lua exporters and additional
-capture formats are not started.
+covered by unit, HTTP, and Chromium tests. Reviewed fixed-range schemas also
+export to Kaitai/Lua with explicit unsupported warnings. Additional capture
+formats and full dependency-aware interoperability are not started.
 
 ## Continuation plan — reliability and investigation workspace
 
