@@ -2,9 +2,9 @@
 
 Starting HEAD: `118a07a`
 
-Current HEAD: `a1a6b87`
+Current HEAD: `eded146`
 
-Current milestone: **Milestone C — PARTIAL; Milestone D NOT_STARTED**
+Current milestone: **Milestone F — release verification recorded; Docker BLOCKED**
 
 ## Status
 
@@ -28,7 +28,10 @@ Current milestone: **Milestone C — PARTIAL; Milestone D NOT_STARTED**
 - PARTIAL: Kaitai and Wireshark exporters remain flat-static only; named integer
   enums are emitted when reviewed names are present, and Wireshark emits
   bounded one-byte named masks. External semantic execution is UNVERIFIED.
-- PARTIAL: the realistic request/response demonstration is not consolidated.
+- COMPLETE: deterministic request/response corpus, separate reviewed schema and
+  ground truth, backend workflow script, and Chromium workflow are present.
+- PARTIAL: the JSONL demonstration intentionally reports no network flow count;
+  transport-flow inspection remains covered by the Phase 6 PCAP workflow.
 - BLOCKED: Docker verification is unavailable unless an authorized Docker host
   becomes accessible.
 - UNVERIFIED: hosted GitHub Actions because no push was authorized.
@@ -46,23 +49,23 @@ median rows across the three measured repeats include:
 
 | Workload | Evaluated packets | Wall seconds | CPU seconds | Throughput | Peak tracemalloc bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| flat | 100,000 | 113.8613 | 113.8215 | 878.3 packets/s | 462,345,070 |
-| nested records | 2,000 | 7.7457 | 7.7450 | 258.2 packets/s | 32,816,672 |
-| large arrays | 1,000 | 19.5625 | 19.5599 | 51.1 packets/s | 97,652,254 |
-| complex dependencies | 2,000 | 3.6316 | 3.6278 | 550.7 packets/s | 13,871,195 |
-| CRC relationships | 2,000 | 2.2942 | 2.2917 | 871.8 packets/s | 12,473,123 |
+| flat | 100,000 | 113.8613 | 113.8215 | 878.3 packets/s | 462,337,966 |
+| nested records | 2,000 | 7.7457 | 7.7450 | 258.2 packets/s | 32,809,936 |
+| large arrays | 1,000 | 19.5625 | 19.5599 | 51.1 packets/s | 97,651,934 |
+| complex dependencies | 2,000 | 3.6316 | 3.6278 | 550.7 packets/s | 13,870,379 |
+| CRC relationships | 2,000 | 2.2942 | 2.2917 | 871.8 packets/s | 12,461,955 |
 
 The before/after comparison uses the same benchmark corpus and configuration;
-the before file is the committed baseline from `04f6dde`, and the after file is
-the committed result from `2159d74`:
+the before file is the committed baseline from `04f6dde`, and the final after
+file is the committed result from `eded146`:
 
 | Workload | Packets | Wall before → after | Throughput before → after | Peak tracemalloc before → after |
 | --- | ---: | ---: | ---: | ---: |
-| flat | 100,000 | 113.8613 s → 72.2298 s (-36.6%) | 878.3 → 1,384.5/s (+57.6%) | 462,337,966 → 462,319,910 (-0.0%) |
-| nested records | 2,000 | 7.7457 s → 6.2017 s (-19.9%) | 258.2 → 322.5/s (+24.9%) | 32,809,936 → 32,490,869 (-1.0%) |
-| large arrays | 1,000 | 19.5625 s → 14.8438 s (-24.1%) | 51.1 → 67.4/s (+31.8%) | 97,651,934 → 97,632,446 (-0.0%) |
-| complex dependencies | 2,000 | 3.6316 s → 2.4856 s (-31.6%) | 550.7 → 804.7/s (+46.1%) | 13,870,379 → 13,832,775 (-0.3%) |
-| CRC relationships | 2,000 | 2.2942 s → 1.6591 s (-27.7%) | 871.8 → 1,205.6/s (+38.3%) | 12,461,955 → 12,432,359 (-0.2%) |
+| flat | 100,000 | 113.8613 s → 71.2414 s (-37.4%) | 878.3 → 1,403.7/s (+59.8%) | 462,337,966 → 462,319,910 (-0.0%) |
+| nested records | 2,000 | 7.7457 s → 6.1945 s (-20.0%) | 258.2 → 322.9/s (+25.0%) | 32,809,936 → 32,490,869 (-1.0%) |
+| large arrays | 1,000 | 19.5625 s → 14.7936 s (-24.4%) | 51.1 → 67.6/s (+32.2%) | 97,651,934 → 97,632,446 (-0.0%) |
+| complex dependencies | 2,000 | 3.6316 s → 2.5371 s (-30.1%) | 550.7 → 788.3/s (+43.1%) | 13,870,379 → 13,832,775 (-0.3%) |
+| CRC relationships | 2,000 | 2.2942 s → 1.6558 s (-27.8%) | 871.8 → 1,208.0/s (+38.6%) | 12,461,955 → 12,432,359 (-0.2%) |
 
 Peak memory above is **traced Python allocation**, not process RSS or peak
 physical memory.
@@ -92,7 +95,7 @@ per-packet state isolation.
   and unchanged normalized schema metadata.
 - `benchmarks/schema-v2-results.json`: regenerated with the pinned runtime after
   the optimization.
-- `make test`: PASS — 157 Python tests.
+- `make test`: PASS — 164 Python tests.
 - `make benchmark`: PASS — 84 measurements, one warmup, three measured repeats.
 - Peak memory numbers remain tracemalloc allocation measurements, not RSS.
 
@@ -110,7 +113,7 @@ schema/capture identities, explicit schema-failure metadata, warnings,
 limitations, and truncation reasons. The synchronous validation endpoint
 discloses that cancellation is not supported rather than claiming it.
 
-- `make test`: PASS — 161 Python tests.
+- `make test`: PASS — 164 Python tests.
 - `node --check packetscope/static/app.js`: PASS.
 - `node --check packetscope/static/schema-values.js`: PASS.
 - `node --test tests/test_schema_values.js`: PASS — 10 JavaScript tests.
@@ -130,11 +133,49 @@ discloses that cancellation is not supported rather than claiming it.
 - UNVERIFIED: `kaitai-struct-compiler`, Wireshark `tshark`, and Lua tooling are
   not installed in this environment; tests verify deterministic generation and
   warnings, not external execution.
-- `make test`: PASS — 162 Python tests.
+- `make test`: PASS — 164 Python tests.
 
-## Exact next action
+## Milestone E end-to-end evidence
 
-Add the deterministic request/response investigation corpus and a browser E2E
-walkthrough that keeps the reference schema separate from inference, exercises
-corrupted/truncated validation, and restores the reviewed project. Then run the
-full release command matrix and record Docker/hosted-CI gates honestly.
+- COMPLETE: `packetscope/demo_protocol.py` generates deterministic request and
+  response messages with dynamic lengths, nested records, variable arrays,
+  sequence values, CRC, corruption, and truncation.
+- COMPLETE: `scripts/phase29_demo.py` runs import, bounded inference, controlled
+  change comparison, authoritative validation, exports, and schema round-trip
+  without passing reference facts into inference.
+- COMPLETE: `tests/test_demo_protocol.py` verifies deterministic bytes,
+  reference separation, and the expected `ok`/`violated`/`incomplete` states.
+- COMPLETE: `e2e/phase29-demo.spec.js` performs the real browser load, schema
+  application, independent validation, visible error/completeness review, and
+  project restore. The full suite passed 14 Chromium tests.
+- PARTIAL: JSONL messages have explicit direction but intentionally no IP/TCP/
+  UDP identity; transport flow and independent scope coverage remains in the
+  Phase 6 PCAP and experiment scenarios.
+
+## Milestone F release verification
+
+- COMPLETE: `make test` — PASS, 164 Python tests.
+- COMPLETE: `node --check packetscope/static/app.js` — PASS.
+- COMPLETE: `node --check packetscope/static/schema-values.js` — PASS.
+- COMPLETE: `node --test tests/test_schema_values.js` — PASS, 10 JavaScript tests.
+- COMPLETE: `npm run e2e` — PASS, 14 Chromium tests.
+- COMPLETE: `git diff --check` — PASS.
+- BLOCKED: Docker is unavailable in this environment; `docker build` and the
+  network-isolated container test were not run.
+- UNVERIFIED: hosted GitHub Actions; no push was authorized.
+- UNVERIFIED: external Kaitai/Wireshark/Lua semantic execution; tools are not
+  installed. Generated syntax and warnings are covered by unit/API tests only.
+
+## Commits created in this phase
+
+`029d104`, `04f6dde`, `680590d`, `2159d74`, `3129ab6`, `1e75272`, `a1a6b87`,
+`40b021e`, `fe04c13`, and `eded146`.
+
+## Exact continuation steps
+
+If further work is authorized, install or provide an approved external Kaitai,
+Wireshark, and Lua toolchain, run generated artifacts against synthetic
+captures, and add semantic range comparisons before promoting matrix entries to
+SUPPORTED. Separately, run the documented Docker commands on an authorized
+Docker-capable host; do not change this checkpoint's BLOCKED/UNVERIFIED gates
+from source-only evidence.
