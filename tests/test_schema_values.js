@@ -148,3 +148,23 @@ test("conditional absence, unresolved dependencies, and truncation keep distinct
   assert.equal(fields[4].status, "INVALID");
   assert.equal(fields[4].diagnostics[0].code, "missing_reference");
 });
+
+test("shared Schema V2 parity fixture matches authoritative field results", () => {
+  const fixture = require("./fixtures/schema_v2_parity.json");
+  const result = apply(validate(fixture.schema), [{ index: 0, raw_payload: fixture.packet_hex }])[0];
+  const fields = Object.fromEntries(result.fields.map((field) => [field.id, field]));
+  for (const [fieldId, expected] of Object.entries(fixture.expected)) {
+    const actual = fields[fieldId];
+    assert.equal(actual.status, expected.status, fieldId);
+    for (const key of ["value", "present", "offset", "length"]) {
+      if (Object.prototype.hasOwnProperty.call(expected, key)) assert.deepEqual(actual[key], expected[key], fieldId);
+    }
+    assert.deepEqual((actual.diagnostics || []).map((item) => item.code), expected.diagnostic_codes || [], fieldId);
+  }
+});
+
+
+test("V1 migration uses the canonical stable field identity", () => {
+  const fixture = require("./fixtures/schema_v2_parity.json");
+  assert.equal(validate(fixture.v1_schema).fields[0].id, fixture.v1_expected_id);
+});

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import unittest
 
 from packetscope.analysis.crc import STANDARD_CRC, checksum_value, compute_crc
@@ -539,6 +540,21 @@ class SchemaV2Tests(unittest.TestCase):
             "relationships": [{"id": "insufficient", "kind": "length", "field_id": "size", "target_field_id": "body"}],
         })
         self.assertEqual(apply_schema(insufficient, [Packet(0, b"\x02x")])["values"][0]["relationships"][0]["status"], "insufficient")
+
+    def test_shared_schema_v2_parity_fixture_matches_authoritative_output(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures" / "schema_v2_parity.json").read_text())
+        schema = validate_schema(fixture["schema"])
+        report = apply_schema(schema, [Packet(0, bytes.fromhex(fixture["packet_hex"]))])
+        fields = {field["id"]: field for field in report["values"][0]["fields"]}
+        for field_id, expected in fixture["expected"].items():
+            actual = fields[field_id]
+            self.assertEqual(actual["status"], expected["status"], field_id)
+            for key in ("value", "present", "offset", "length"):
+                if key in expected:
+                    self.assertEqual(actual.get(key), expected[key], field_id)
+            self.assertEqual([item["code"] for item in actual["diagnostics"]], expected.get("diagnostic_codes", []), field_id)
+        self.assertEqual(migrate_schema(fixture["v1_schema"])["fields"][0]["id"], fixture["v1_expected_id"])
+
 
 
 if __name__ == "__main__":

@@ -146,6 +146,18 @@
     return `${parentId ? `${parentId}.` : ""}${slug(field.name || field.type || "field")}_${index}`;
   }
 
+  // V1 migration uses the same bounded FNV-1a identity as the Python
+  // engine. This stays synchronous and dependency-free in the browser bundle.
+  function v1StableId(field, index, name, sourceType, offset, width, coordinateSystem) {
+    const identity = JSON.stringify({ coordinate_system: coordinateSystem, name, offset, type: sourceType, width });
+    let hash = 2166136261;
+    for (const byte of new TextEncoder().encode(identity)) {
+      hash ^= byte;
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `${slug(name)}_${hash.toString(16).padStart(8, "0")}`;
+  }
+
   function budgetInt(raw, name, fallback, maximum) {
     const candidate = raw && Object.prototype.hasOwnProperty.call(raw, name) ? raw[name] : fallback;
     if (typeof candidate === "boolean" || !Number.isInteger(Number(candidate)) || Number(candidate) <= 0 || Number(candidate) > maximum) throw new Error(`schema budget ${name} is outside the limit`);
@@ -415,11 +427,13 @@
       if (!COORDINATE_SYSTEMS.has(fieldCoordinate)) throw new Error("schema field coordinate system is invalid");
       const endian = field.endian ?? "unknown";
       if (!["big", "little", "unknown"].includes(endian)) throw new Error("schema field endian is invalid");
-      const type = String(field.type ?? "custom").toUpperCase();
+      const sourceType = String(field.type ?? "custom").slice(0, 40);
+      const type = sourceType.toUpperCase();
       if ((type === "UINT32" && field.width !== 4) || ((type === "UINT64" || type === "INT64") && field.width !== 8)) throw new Error("schema integer type does not match field width");
+      const name = field.name.trim().slice(0, 120);
       return {
-        id: stableId(field, index), name: field.name.trim().slice(0, 120), description: "Migrated from Schema V1 fixed-range field.",
-        type: String(field.type ?? "custom").toLowerCase(), offset: field.offset, length: field.width,
+        id: v1StableId(field, index, name, sourceType, field.offset, field.width, fieldCoordinate), name, description: "Migrated from Schema V1 fixed-range field.",
+        type: sourceType.toLowerCase(), offset: field.offset, length: field.width,
         endian, coordinate_system: fieldCoordinate,
         constraints: clone(field.constraints ?? {}), metadata: { legacy_v1: true, origin: field.origin, review_status: field.review_status, evidence_refs: clone(field.evidence_refs ?? []), known_limitations: clone(field.known_limitations ?? []) },
       };

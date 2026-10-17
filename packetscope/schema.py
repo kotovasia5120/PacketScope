@@ -2828,11 +2828,14 @@ def validate_capture_against_schema(schema: dict[str, Any], packets: Iterable[Pa
 def migrate_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Convert a V1 fixed-range schema to V2 without inventing dynamic rules."""
     checked = _validate_schema_v1(schema)
-    import hashlib
     fields: list[dict[str, Any]] = []
     for field in checked["fields"]:
-        identity = json.dumps({"name": field["name"], "type": field["type"], "offset": field["offset"], "width": field["width"], "coordinate_system": field["coordinate_system"]}, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        identity = json.dumps({"coordinate_system": field["coordinate_system"], "name": field["name"], "offset": field["offset"], "type": field["type"], "width": field["width"]}, sort_keys=True, separators=(",", ":"))
+        digest_value = 2166136261
+        for byte in identity.encode("utf-8"):
+            digest_value ^= byte
+            digest_value = (digest_value * 16777619) & 0xFFFFFFFF
+        digest = f"{digest_value:08x}"
         fields.append({
             "id": f"{_v2_slug(field['name'])}_{digest}", "name": field["name"],
             "description": "Migrated from Schema V1 fixed-range field.",

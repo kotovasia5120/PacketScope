@@ -1,0 +1,149 @@
+{
+  "name": "schema-v2-parity-core",
+  "schema": {
+    "schema_version": 2,
+    "coordinate_system": "raw_packet",
+    "fields": [
+      {
+        "id": "signed",
+        "name": "Signed",
+        "type": "int8",
+        "offset": 0,
+        "length": 1,
+        "endian": "big"
+      },
+      {
+        "id": "wide",
+        "name": "Wide",
+        "type": "uint64",
+        "offset": 1,
+        "length": 8,
+        "endian": "big"
+      },
+      {
+        "id": "enum",
+        "name": "Enum",
+        "type": "uint8",
+        "offset": 9,
+        "length": 1,
+        "endian": "big",
+        "constraints": {
+          "enum": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "id": "flags",
+        "name": "Flags",
+        "type": "uint8",
+        "offset": 10,
+        "length": 1,
+        "endian": "big",
+        "constraints": {
+          "mask": 7,
+          "reserved": 8
+        }
+      },
+      {
+        "id": "gate",
+        "name": "Gate",
+        "type": "uint8",
+        "offset": 11,
+        "length": 1,
+        "endian": "big"
+      },
+      {
+        "id": "optional",
+        "name": "Optional",
+        "type": "uint8",
+        "offset": 12,
+        "length": 1,
+        "endian": "big",
+        "presence": {
+          "op": "eq",
+          "args": [
+            {
+              "field": "gate"
+            },
+            1
+          ]
+        }
+      },
+      {
+        "id": "length",
+        "name": "Length",
+        "type": "uint8",
+        "offset": 12,
+        "length": 1,
+        "endian": "big"
+      },
+      {
+        "id": "payload",
+        "name": "Payload",
+        "type": "bytes",
+        "offset": 13,
+        "length": {
+          "field": "length"
+        }
+      }
+    ]
+  },
+  "packet_hex": "ffffffffffffffffff030f0002aabb",
+  "expected": {
+    "signed": {
+      "status": "RESOLVED",
+      "value": -1,
+      "offset": 0,
+      "length": 1
+    },
+    "wide": {
+      "status": "RESOLVED",
+      "value": "18446744073709551615",
+      "offset": 1,
+      "length": 8
+    },
+    "enum": {
+      "status": "INVALID",
+      "diagnostic_codes": [
+        "enum"
+      ]
+    },
+    "flags": {
+      "status": "INVALID",
+      "diagnostic_codes": [
+        "mask",
+        "reserved"
+      ]
+    },
+    "optional": {
+      "status": "RESOLVED",
+      "present": false,
+      "diagnostic_codes": [
+        "conditional_absent"
+      ]
+    },
+    "payload": {
+      "status": "RESOLVED",
+      "value": "aabb",
+      "offset": 13,
+      "length": 2,
+      "diagnostic_codes": []
+    }
+  },
+  "v1_schema": {
+    "schema_version": 1,
+    "name": "legacy",
+    "fields": [
+      {
+        "name": "value",
+        "type": "UINT8",
+        "offset": 0,
+        "width": 1,
+        "endian": "big"
+      }
+    ]
+  },
+  "v1_expected_id": "value_71fea572"
+}
