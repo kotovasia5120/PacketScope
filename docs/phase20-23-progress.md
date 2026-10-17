@@ -2,7 +2,7 @@
 
 Starting HEAD: `f14e4f1`
 
-Current HEAD: `6e5f81d`
+Current HEAD: `9432d87`
 
 Current milestone: **Milestone A — PARTIAL**
 
@@ -44,6 +44,15 @@ Current milestone: **Milestone A — PARTIAL**
 
 - COMPLETE: browser messaging and the existing API path disclose that Python
   is authoritative for reusable definitions and relationships.
+- COMPLETE: `/api/schema/validate` now returns additive versioned evaluation
+  contract metadata with canonical schema identity, raw capture identity,
+  evaluator version/authority, server capability IDs, completeness status,
+  bounded warnings/limitations, and explicit truncation reasons.
+- COMPLETE: browser validation reports render the contract without changing
+  the existing summary and packet diagnostic meaning; old responses without
+  the contract remain supported.
+- COMPLETE: HTTP integration tests assert V1/V2 contract identity, authority,
+  capabilities, counts, and non-truncated normal evaluation.
 - NOT_STARTED: versioned response metadata for evaluator version/capabilities
   and completeness has not yet been added.
 - PARTIAL: the shared parity fixture still intentionally covers only the
@@ -121,6 +130,8 @@ The new workbench E2E is in `e2e/schema-v2-usability.spec.js`.
 ## Commits
 
 - `6e5f81d feat: add hierarchical schema workbench`
+- `837ae76 docs: checkpoint phase 20 workbench`
+- `9432d87 feat: expose authoritative schema evaluation contract`
 - A docs-only checkpoint commit is pending after this file is updated.
 
 ## Known regressions / gaps
@@ -133,6 +144,6 @@ The new workbench E2E is in `e2e/schema-v2-usability.spec.js`.
 
 ## Exact next implementation action
 
-Run the full required check matrix, fix any regression, commit the workbench
-vertically, then add the versioned evaluator capability metadata and differential
-server-authority coverage before starting performance benchmarks.
+Run the full required check matrix after the contract checkpoint, then build the
+deterministic Schema V2 performance corpus and record cold/warm baselines before
+optimizing any measured bottleneck.
