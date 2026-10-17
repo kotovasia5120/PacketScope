@@ -10,7 +10,7 @@ proof that an interpretation is the protocol.
 
 ## Milestone status
 
-### Milestone A — Schema V2 constraints: COMPLETE locally
+### Milestone A — Schema V2 constraints: PARTIAL; core vertical slice COMPLETE
 
 - COMPLETE: numeric minimum, maximum, exact, allowed, forbidden, signedness,
   width, and endianness checks with lossless wide-integer values.
@@ -20,13 +20,16 @@ proof that an interpretation is the protocol.
 - COMPLETE: field-level diagnostics include field ID/path and byte location.
 - COMPLETE: conditional absence, unresolved dependencies, truncation, invalid
   schemas, unsupported relationships, and resource limits retain distinct states.
-- COMPLETE: browser evaluator covers the supported constraint subset and signed
+- COMPLETE: browser evaluator covers the tested constraint subset and signed
   integer semantics.
 - COMPLETE: browser structured constraint controls retain an advanced JSON escape
   hatch and submit the authored schema to authoritative server validation.
 - COMPLETE: shared golden fixture compares Python and JavaScript values, paths,
-  offsets, statuses, and diagnostic codes. V1 migration uses a canonical bounded
-  FNV-1a identity in both engines.
+  offsets, statuses, and diagnostic codes for the supported core subset. V1
+  migration uses a canonical bounded FNV-1a identity in both engines.
+- PARTIAL: browser-local checksum/length relationship evaluation and full
+  reusable-definition instance scoping are not yet equivalent to Python; the
+  independent validation path delegates authoritative results to Python.
 
 ### Milestone B — Independent-capture validation: COMPLETE locally
 
