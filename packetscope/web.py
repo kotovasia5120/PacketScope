@@ -28,7 +28,13 @@ from packetscope.evaluation import evaluate_result
 from packetscope.flows import flows_as_dict, group_flows, normalize_direction
 from packetscope.jobs import AnalysisManager
 from packetscope.reassembly import reconstruct_tcp_streams
-from packetscope.schema import loads_schema, validate_capture_against_schema
+from packetscope.schema import (
+    SCHEMA_EVALUATOR_CAPABILITIES,
+    SCHEMA_EVALUATOR_VERSION,
+    dumps_schema,
+    loads_schema,
+    validate_capture_against_schema,
+)
 
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -408,6 +414,7 @@ class PacketScopeHandler(BaseHTTPRequestHandler):
             report = validate_capture_against_schema(schema, imported.packets, max_packets=self.server.limits.max_packets)  # type: ignore[attr-defined]
             report["source"] = {"name": name, "format": imported.format, "packet_count": len(imported.packets), "byte_count": len(payload)}
             report["warnings"] = _merge_warnings([], imported.warnings)
+            report["evaluation_contract"] = _schema_evaluation_contract(schema, payload, imported.format, imported.packets, report)
             self._json(HTTPStatus.OK, report)
         except PacketScopeError as exc:
             self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE if isinstance(exc, InputLimitError) else HTTPStatus.BAD_REQUEST, {"error": _safe_capture_error(exc)})
@@ -775,6 +782,80 @@ def _multipart_file(content_type: str, body: bytes) -> tuple[str, str, bytes, bo
             raise ValueError("multipart file payload is invalid")
         return filename[:200], requested_format, payload, analyze_raw, selected_direction, flow_id
     raise ValueError("multipart field 'file' is required")
+
+
+def _schema_evaluation_contract(
+    schema: dict[str, object],
+    payload: bytes,
+    format_name: str,
+    packets: list[object],
+    report: dict[str, object],
+) -> dict[str, object]:
+    """Describe exactly what the authoritative HTTP evaluation covered.
+
+    This is additive metadata: older clients can continue consuming the
+    existing ``summary`` and ``packets`` fields. Hashes are computed on the
+    received capture and canonical normalized schema, never accepted from the
+    browser, and no raw capture data is copied into the response.
+    """
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    packet_results = report.get("packets") if isinstance(report.get("packets"), list) else []
+    input_packets = len(packets)
+    evaluated_packets = len(packet_results)
+    application_status = str(summary.get("application_status", ""))
+    truncation_reasons: list[str] = []
+    if evaluated_packets < input_packets:
+        truncation_reasons.append("evaluation_packet_budget")
+    if application_status == "LIMIT_EXCEEDED":
+        truncation_reasons.append("schema_budget")
+    capture_truncated = sum(
+        1 for packet in packets
+        if getattr(packet, "original_length", None) is not None
+        and int(getattr(packet, "original_length")) > len(getattr(packet, "payload", b""))
+    )
+    if capture_truncated:
+        truncation_reasons.append("capture_record_truncation")
+    truncation_reasons = sorted(set(truncation_reasons))
+    incomplete_packets = int(summary.get("incomplete_packets", 0) or 0)
+    completeness_status = "truncated" if truncation_reasons else "partial" if incomplete_packets else "complete"
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+    return {
+        "version": 1,
+        "schema_identity": {
+            "algorithm": "sha256",
+            "value": hashlib.sha256(dumps_schema(schema).encode("utf-8")).hexdigest(),
+            "schema_version": schema.get("schema_version", 1),
+        },
+        "capture_identity": {
+            "algorithm": "sha256",
+            "value": hashlib.sha256(payload).hexdigest(),
+            "format": format_name,
+            "packet_count": input_packets,
+            "byte_count": len(payload),
+        },
+        "evaluator": {"name": "packetscope-schema", "version": SCHEMA_EVALUATOR_VERSION, "authority": "python-server"},
+        "supported_capabilities": list(SCHEMA_EVALUATOR_CAPABILITIES),
+        "completeness": {
+            "status": completeness_status,
+            "input_packets": input_packets,
+            "evaluated_packets": evaluated_packets,
+            "incomplete_packets": incomplete_packets,
+            "schema_diagnostics": len(report.get("schema_diagnostics", []) if isinstance(report.get("schema_diagnostics"), list) else []),
+        },
+        "warnings": warnings[:32],
+        "limitations": [
+            "Validation is packet-scoped; TCP stream reassembly is not performed.",
+            "Unavailable or incomplete byte ranges are not treated as protocol violations.",
+            "Evaluation is bounded by server and schema budgets.",
+        ],
+        "truncation": {
+            "truncated": bool(truncation_reasons),
+            "reasons": truncation_reasons,
+            "input_packets": input_packets,
+            "evaluated_packets": evaluated_packets,
+            "capture_records": capture_truncated,
+        },
+    }
 
 
 def _multipart_schema_validation(content_type: str, body: bytes) -> tuple[str, str, bytes, dict]:

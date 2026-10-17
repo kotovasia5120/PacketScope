@@ -16,6 +16,20 @@ from packetscope.protocols import COORDINATE_SYSTEMS, coordinate_bytes
 
 SCHEMA_VERSION = 1
 SCHEMA_V2_VERSION = 2
+SCHEMA_EVALUATOR_VERSION = "schema-evaluator-2"
+SCHEMA_EVALUATOR_CAPABILITIES = (
+    "schema-v1.fixed_ranges",
+    "schema-v2.declarative_fields",
+    "schema-v2.dynamic_offsets_lengths",
+    "schema-v2.conditional_presence",
+    "schema-v2.arrays",
+    "schema-v2.nested_fields",
+    "schema-v2.reusable_definitions",
+    "schema-v2.length_relationships",
+    "schema-v2.checksum_relationships",
+    "coordinates.raw_packet",
+    "coordinates.application_payload",
+)
 MAX_FIELDS = 1000
 MAX_FIELD_WIDTH = 16 * 1024 * 1024
 DEFAULT_COORDINATE_SYSTEM = "raw_packet"

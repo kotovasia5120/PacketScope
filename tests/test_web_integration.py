@@ -1,3 +1,4 @@
+import hashlib
 import json
 import socket
 import threading
@@ -563,6 +564,13 @@ class WebIntegrationTests(unittest.TestCase):
             report = json.load(response)
         self.assertEqual(report["summary"]["constraint_violations"], 1)
         self.assertEqual(report["packets"][0]["status"], "violated")
+        contract = report["evaluation_contract"]
+        self.assertEqual(contract["version"], 1)
+        self.assertEqual(contract["schema_identity"]["schema_version"], 1)
+        self.assertEqual(contract["capture_identity"]["value"], hashlib.sha256(b"\x00\x00\x00\x01").hexdigest())
+        self.assertEqual(contract["evaluator"]["authority"], "python-server")
+        self.assertEqual(contract["completeness"]["status"], "complete")
+        self.assertFalse(contract["truncation"]["truncated"])
 
     def test_schema_validation_endpoint_applies_v2_dependencies_and_conditional_absence(self):
         self.server.limits = Limits(max_input_bytes=4096)
@@ -584,6 +592,10 @@ class WebIntegrationTests(unittest.TestCase):
         optional = report["packets"][0]["fields"][2]
         self.assertFalse(optional["present"])
         self.assertEqual(optional["status"], "RESOLVED")
+        contract = report["evaluation_contract"]
+        self.assertEqual(contract["schema_identity"]["schema_version"], 2)
+        self.assertIn("schema-v2.reusable_definitions", contract["supported_capabilities"])
+        self.assertEqual(contract["completeness"]["evaluated_packets"], 1)
 
     def test_reviewed_schema_exports_are_reported_without_execution(self):
         schema = {"schema_version": 1, "name": "Demo", "fields": [{"name": "header", "type": "custom", "offset": 0, "width": 1, "endian": "unknown", "coordinate_system": "raw_packet"}]}
