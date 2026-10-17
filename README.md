@@ -66,6 +66,13 @@ for private evidence.
 - Reviewed-schema export to bounded Kaitai Struct `.ksy` and Wireshark Lua
   dissector text with explicit warnings for unsupported coordinates, overlaps,
   and constructs; generated code is never executed by PacketScope.
+- Hierarchical Schema V2 workbench for reusable definitions, nested structures,
+  dynamic arrays, conditional fields, dependency inspection, relationships,
+  exact schema/project restore, and bounded undo/redo.
+- Authoritative schema validation contracts with canonical schema/capture
+  identities, evaluator capabilities, completeness, and explicit truncation.
+- Reproducible synthetic Schema V2 performance corpus and JSON measurements;
+  run `make benchmark` to regenerate `benchmarks/schema-v2-results.json`.
 - Versioned Schema V2 migration and bounded declarative evaluation for stable
   field IDs, dynamic offsets/lengths, conditions, fixed/count arrays, nested
   fields, reusable definitions, explicit dependency diagnostics, and resource

@@ -5,7 +5,7 @@
 PINNED_PYTHON := .runtime/cpython-3.12.7-linux-x86_64-gnu/bin/python3.12
 PYTHON ?= $(if $(wildcard $(PINNED_PYTHON)),$(PINNED_PYTHON),$(if $(shell command -v python3.12 2>/dev/null),python3.12,python3))
 
-.PHONY: test serve wheel check-runtime
+.PHONY: test serve wheel benchmark check-runtime
 
 check-runtime:
 	@$(PYTHON) -c 'import sys; expected=(3, 12, 7); actual=sys.version_info[:3]; sys.exit("PacketScope requires Python 3.12.7; found %s" % (".".join(map(str, actual))) if actual != expected else 0)'
@@ -15,6 +15,9 @@ test: check-runtime
 
 wheel: check-runtime
 	SOURCE_DATE_EPOCH=$${SOURCE_DATE_EPOCH:-315532800} $(PYTHON) -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
+
+benchmark: check-runtime
+	$(PYTHON) scripts/benchmark_schema_v2.py --output benchmarks/schema-v2-results.json
 
 serve:
 	$(PYTHON) -m packetscope.cli serve --host "$${PACKETSCOPE_HOST:-127.0.0.1}" --port "$${PACKETSCOPE_PORT:-8765}"
