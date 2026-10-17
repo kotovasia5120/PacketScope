@@ -12,7 +12,7 @@ Current milestone: **Milestone A — profiling complete; optimization NOT_STARTE
   benchmark corpus, validation contract, and interoperability matrix inspected.
 - COMPLETE: baseline benchmark reproduced with the pinned CPython 3.12.7
   interpreter using `make benchmark` (84 measurements, 100/1,000/10,000/100,000
-  requested sizes, one repeat, no warmup).
+  requested sizes, one warmup, three measured repeats).
 - COMPLETE: cProfile and tracemalloc profiling identified repeated per-packet
   schema preparation as the dominant avoidable cost.
 - NOT_STARTED: prepared-schema evaluation optimization.
@@ -33,7 +33,7 @@ make benchmark
 ```
 
 The current environment is CPython 3.12.7 on Linux x86_64. The reproduced
-median-like single-repeat rows include:
+median rows across the three measured repeats include:
 
 | Workload | Evaluated packets | Wall seconds | CPU seconds | Throughput | Peak tracemalloc bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
