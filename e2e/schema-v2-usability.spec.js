@@ -79,3 +79,77 @@ test("creates a Schema V2 field from a HEX range beyond the rendered window", as
   expect(field.metadata.source_offset).toBe(9029);
   expect(field.metadata.source_width).toBe(4);
 });
+
+test("builds a nested reusable dynamic protocol through the Schema Workbench", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Load demo" }).click();
+  await page.getByRole("button", { name: "Fields" }).click();
+  await page.getByRole("button", { name: "Open schema editor" }).click();
+
+  const addField = async ({ id, name, type = "uint8", offset = "0", width = "1", array = false, countReference = "", conditionReference = "", conditionValue = "1" }) => {
+    await page.locator("#schema-editor-id").fill(id);
+    await page.locator("#schema-editor-name").fill(name);
+    await page.locator("#schema-editor-type").selectOption(type);
+    await page.locator("#schema-editor-offset").fill(offset);
+    await page.locator("#schema-editor-width").fill(width);
+    if (array) {
+      await page.locator("#schema-editor-array").check();
+      await page.locator("#schema-editor-array-type").selectOption("uint8");
+      await page.locator("#schema-editor-array-length").fill("1");
+      await page.locator("#schema-editor-array-count-reference").selectOption(countReference);
+    }
+    if (conditionReference) {
+      await page.locator("#schema-editor-condition-reference").selectOption(conditionReference);
+      await page.locator("#schema-editor-condition-value").fill(conditionValue);
+    }
+    await page.locator("#schema-editor-form").getByRole("button", { name: "Add field", exact: true }).click();
+  };
+
+  await page.locator("#schema-editor-definition-name").fill("record");
+  await page.getByRole("button", { name: "Add definition" }).click();
+  await expect(page.locator("#schema-editor-definitions")).toContainText("record");
+  await page.getByRole("button", { name: "Add field to scope" }).click();
+  await addField({ id: "record-type", name: "RecordType" });
+  await addField({ id: "record-value", name: "Value", type: "bytes", offset: "1", width: "1" });
+
+  await page.getByRole("button", { name: "Open root protocol", exact: true }).click();
+  await addField({ id: "header", name: "Header", type: "struct", offset: "0", width: "2" });
+  await page.locator("#schema-editor-tree").getByRole("button", { name: "Add child", exact: true }).click();
+  await addField({ id: "magic", name: "Magic", type: "uint16", offset: "0", width: "2" });
+  await page.getByRole("button", { name: "Open root protocol", exact: true }).click();
+  await addField({ id: "flags", name: "Flags", offset: "2" });
+  await addField({ id: "record-count", name: "RecordCount", offset: "3" });
+  await addField({ id: "records", name: "Records", type: "array", offset: "4", width: "2", array: true, countReference: "record-count" });
+  await addField({ id: "metadata", name: "OptionalMetadata", type: "bytes", offset: "6", width: "1", conditionReference: "flags", conditionValue: "1" });
+  await addField({ id: "crc", name: "CRC16", type: "crc", offset: "7", width: "1" });
+
+  await page.locator("#schema-rel-kind").selectOption("checksum");
+  await page.locator("#schema-rel-field").selectOption("crc");
+  await page.locator("#schema-rel-algorithm").selectOption("CRC-8");
+  await page.locator("#schema-rel-include").fill("[[0, 8]]");
+  await page.locator("#schema-rel-exclude").fill("[[7, 8]]");
+  await page.getByRole("button", { name: "Add relationship" }).click();
+  await expect(page.locator("#schema-editor-relationships")).toContainText("relationship");
+
+  await page.getByRole("button", { name: "Apply reviewed schema" }).click();
+  await expect(page.locator("#status")).toContainText(/Applied reviewed schema|Schema is not valid/);
+  await expect(page.locator("#schema-editor-dependencies")).toContainText("record-count");
+
+  const schemaDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export exact V2 JSON" }).click();
+  const schemaPath = testInfo.outputPath("nested.schema-v2.json");
+  await (await schemaDownload).saveAs(schemaPath);
+  const authored = JSON.parse(require("fs").readFileSync(schemaPath, "utf8"));
+  expect(authored.definitions.record.fields).toHaveLength(2);
+  expect(authored.fields.find((field) => field.id === "records").array.count).toEqual({ field: "record-count" });
+  expect(authored.relationships).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  const projectDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export JSON" }).click();
+  const projectPath = testInfo.outputPath("nested-project.json");
+  await (await projectDownload).saveAs(projectPath);
+  await page.locator("#project-file").setInputFiles(projectPath);
+  await expect(page.locator("#status")).toContainText("Restored saved project");
+  await expect(page.locator("#schema-editor-tree")).toContainText("Records");
+});

@@ -448,9 +448,9 @@ function parseStructuredConstraints(type) {
   return constraints;
 }
 function valueForEditor(value) { return value === undefined || value === null ? "" : typeof value === "string" ? value : JSON.stringify(value); }
-function populateSchemaEditor(field) { const constraints = field.constraints || {}; $("#schema-editor-id").value = field.id || ""; $("#schema-editor-name").value = field.name || "field"; $("#schema-editor-description").value = field.description || ""; $("#schema-editor-type").value = field.type || "bytes"; $("#schema-editor-offset").value = Number.isInteger(field.offset) ? field.offset : 0; $("#schema-editor-offset-expression").value = field.offset && typeof field.offset === "object" ? JSON.stringify(field.offset) : ""; $("#schema-editor-width").value = Number.isInteger(field.length) ? field.length : 1; $("#schema-editor-length-expression").value = field.length && typeof field.length === "object" ? JSON.stringify(field.length) : ""; $("#schema-editor-condition").value = field.presence === true || field.presence === undefined ? "" : JSON.stringify(field.presence); $("#schema-editor-endian").value = field.endian || "unknown"; $("#schema-editor-array").checked = Boolean(field.array); $("#schema-editor-array-count").value = field.array ? valueForEditor(field.array.count) : ""; $("#schema-editor-array-type").value = field.array?.element?.type || "uint8"; $("#schema-editor-array-length").value = field.array?.element?.length || 1; $("#schema-editor-nested-json").value = field.fields ? JSON.stringify(field.fields) : ""; $("#schema-editor-minimum").value = valueForEditor(constraints.minimum); $("#schema-editor-maximum").value = valueForEditor(constraints.maximum); $("#schema-editor-exact").value = valueForEditor(constraints.exact); const enumValue = constraints.enum; $("#schema-editor-enum").value = valueForEditor(Array.isArray(enumValue) ? enumValue : enumValue?.values ?? enumValue?.allowed); $("#schema-editor-enum-policy").value = enumValue?.policy || constraints.enum_policy || "strict"; $("#schema-editor-allowed").value = valueForEditor(constraints.allowed); $("#schema-editor-forbidden").value = valueForEditor(constraints.forbidden); $("#schema-editor-mask").value = valueForEditor(constraints.mask); $("#schema-editor-reserved").value = valueForEditor(constraints.reserved); $("#schema-editor-required-flags").value = valueForEditor(constraints.required_flags); $("#schema-editor-forbidden-flags").value = valueForEditor(constraints.forbidden_flags); const relationship = constraints.length_relationship || constraints.length_relation; $("#schema-editor-length-target").value = relationship?.target || ""; $("#schema-editor-length-mode").value = relationship?.mode || "length"; const advanced = { ...constraints }; ["minimum", "maximum", "exact", "enum", "enum_policy", "allowed", "forbidden", "mask", "reserved", "required_flags", "forbidden_flags", "length_relationship", "length_relation"].forEach((key) => delete advanced[key]); $("#schema-editor-constraints-json").value = Object.keys(advanced).length ? JSON.stringify(advanced) : ""; }
-function clearSchemaEditor() { ["#schema-editor-id", "#schema-editor-description", "#schema-editor-offset-expression", "#schema-editor-length-expression", "#schema-editor-condition", "#schema-editor-array-count", "#schema-editor-nested-json", "#schema-editor-minimum", "#schema-editor-maximum", "#schema-editor-exact", "#schema-editor-enum", "#schema-editor-allowed", "#schema-editor-forbidden", "#schema-editor-mask", "#schema-editor-reserved", "#schema-editor-required-flags", "#schema-editor-forbidden-flags", "#schema-editor-length-target", "#schema-editor-constraints-json"].forEach((id) => { $(id).value = ""; }); $("#schema-editor-name").value = "field"; $("#schema-editor-offset").value = "0"; $("#schema-editor-width").value = "1"; $("#schema-editor-condition").value = ""; $("#schema-editor-array").checked = false; $("#schema-editor-array-count").value = ""; $("#schema-editor-array-length").value = "1"; $("#schema-editor-endian").value = "unknown"; $("#schema-editor-enum-policy").value = "strict"; $("#schema-editor-length-mode").value = "length"; $("#schema-editor-array-type").value = "uint8"; state.schemaEditorSelection = null; renderSchemaSelectionSource(); }
-function schemaFieldFromEditor() { const name = $("#schema-editor-name").value.trim(); const type = $("#schema-editor-type").value; if (!name) throw new Error("Field name is required"); const offset = parseEditorExpression($("#schema-editor-offset-expression").value, "Offset", Number($("#schema-editor-offset").value)); const length = parseEditorExpression($("#schema-editor-length-expression").value, "Length", Number($("#schema-editor-width").value)); const selection = state.schemaEditorSelection; const coordinate = selection?.coordinateSystem || currentCoordinateSystem(); const integerTypes = new Set(["u8", "uint8", "byte", "u16", "uint16", "u32", "uint32", "u64", "uint64", "u128", "uint128", "i8", "int8", "i16", "int16", "i32", "int32", "i64", "int64", "i128", "int128", "uint", "unsigned", "unsigned_integer", "int", "signed", "signed_integer", "integer"]); const endian = $("#schema-editor-endian").value === "unknown" && integerTypes.has(String(type).toLowerCase()) ? "big" : $("#schema-editor-endian").value; const metadata = { origin: "manual", review_status: "confirmed" }; if (selection) Object.assign(metadata, { source_packet_index: selection.packetIndex, source_coordinate_system: selection.coordinateSystem, source_offset: selection.offset, source_width: selection.width }); const field = { id: $("#schema-editor-id").value.trim() || `${name.replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase() || "field"}_${stableClientHash(`${name}:${type}:${JSON.stringify(offset)}:${JSON.stringify(length)}:${coordinate}`)}`, name, description: $("#schema-editor-description").value.trim(), type, offset, length, endian, coordinate_system: coordinate, presence: parseEditorExpression($("#schema-editor-condition").value, "Condition", true), constraints: parseStructuredConstraints(type), metadata }; const nestedText = $("#schema-editor-nested-json").value.trim(); if (nestedText) { const nested = JSON.parse(nestedText); if (!Array.isArray(nested)) throw new Error("Nested fields JSON must be an array"); field.fields = nested; } if ($("#schema-editor-array").checked) { const elementLength = Number($("#schema-editor-array-length").value); if (!Number.isInteger(elementLength) || elementLength < 1) throw new Error("Array element length must be a positive integer"); field.array = { count: parseEditorExpression($("#schema-editor-array-count").value, "Array count", 0), element: { type: $("#schema-editor-array-type").value, offset: 0, length: elementLength, endian } }; } return field; }
+function populateSchemaEditorOriginal(field) { const constraints = field.constraints || {}; $("#schema-editor-id").value = field.id || ""; $("#schema-editor-name").value = field.name || "field"; $("#schema-editor-description").value = field.description || ""; $("#schema-editor-type").value = field.type || "bytes"; $("#schema-editor-offset").value = Number.isInteger(field.offset) ? field.offset : 0; $("#schema-editor-offset-expression").value = field.offset && typeof field.offset === "object" ? JSON.stringify(field.offset) : ""; $("#schema-editor-width").value = Number.isInteger(field.length) ? field.length : 1; $("#schema-editor-length-expression").value = field.length && typeof field.length === "object" ? JSON.stringify(field.length) : ""; $("#schema-editor-condition").value = field.presence === true || field.presence === undefined ? "" : JSON.stringify(field.presence); $("#schema-editor-endian").value = field.endian || "unknown"; $("#schema-editor-array").checked = Boolean(field.array); $("#schema-editor-array-count").value = field.array ? valueForEditor(field.array.count) : ""; $("#schema-editor-array-type").value = field.array?.element?.type || "uint8"; $("#schema-editor-array-length").value = field.array?.element?.length || 1; $("#schema-editor-nested-json").value = field.fields ? JSON.stringify(field.fields) : ""; $("#schema-editor-minimum").value = valueForEditor(constraints.minimum); $("#schema-editor-maximum").value = valueForEditor(constraints.maximum); $("#schema-editor-exact").value = valueForEditor(constraints.exact); const enumValue = constraints.enum; $("#schema-editor-enum").value = valueForEditor(Array.isArray(enumValue) ? enumValue : enumValue?.values ?? enumValue?.allowed); $("#schema-editor-enum-policy").value = enumValue?.policy || constraints.enum_policy || "strict"; $("#schema-editor-allowed").value = valueForEditor(constraints.allowed); $("#schema-editor-forbidden").value = valueForEditor(constraints.forbidden); $("#schema-editor-mask").value = valueForEditor(constraints.mask); $("#schema-editor-reserved").value = valueForEditor(constraints.reserved); $("#schema-editor-required-flags").value = valueForEditor(constraints.required_flags); $("#schema-editor-forbidden-flags").value = valueForEditor(constraints.forbidden_flags); const relationship = constraints.length_relationship || constraints.length_relation; $("#schema-editor-length-target").value = relationship?.target || ""; $("#schema-editor-length-mode").value = relationship?.mode || "length"; const advanced = { ...constraints }; ["minimum", "maximum", "exact", "enum", "enum_policy", "allowed", "forbidden", "mask", "reserved", "required_flags", "forbidden_flags", "length_relationship", "length_relation"].forEach((key) => delete advanced[key]); $("#schema-editor-constraints-json").value = Object.keys(advanced).length ? JSON.stringify(advanced) : ""; }
+function clearSchemaEditorOriginal() { ["#schema-editor-id", "#schema-editor-description", "#schema-editor-offset-expression", "#schema-editor-length-expression", "#schema-editor-condition", "#schema-editor-array-count", "#schema-editor-nested-json", "#schema-editor-minimum", "#schema-editor-maximum", "#schema-editor-exact", "#schema-editor-enum", "#schema-editor-allowed", "#schema-editor-forbidden", "#schema-editor-mask", "#schema-editor-reserved", "#schema-editor-required-flags", "#schema-editor-forbidden-flags", "#schema-editor-length-target", "#schema-editor-constraints-json"].forEach((id) => { $(id).value = ""; }); $("#schema-editor-name").value = "field"; $("#schema-editor-offset").value = "0"; $("#schema-editor-width").value = "1"; $("#schema-editor-condition").value = ""; $("#schema-editor-array").checked = false; $("#schema-editor-array-count").value = ""; $("#schema-editor-array-length").value = "1"; $("#schema-editor-endian").value = "unknown"; $("#schema-editor-enum-policy").value = "strict"; $("#schema-editor-length-mode").value = "length"; $("#schema-editor-array-type").value = "uint8"; state.schemaEditorSelection = null; renderSchemaSelectionSource(); }
+function schemaFieldFromEditorOriginal() { const name = $("#schema-editor-name").value.trim(); const type = $("#schema-editor-type").value; if (!name) throw new Error("Field name is required"); const offset = parseEditorExpression($("#schema-editor-offset-expression").value, "Offset", Number($("#schema-editor-offset").value)); const length = parseEditorExpression($("#schema-editor-length-expression").value, "Length", Number($("#schema-editor-width").value)); const selection = state.schemaEditorSelection; const coordinate = selection?.coordinateSystem || currentCoordinateSystem(); const integerTypes = new Set(["u8", "uint8", "byte", "u16", "uint16", "u32", "uint32", "u64", "uint64", "u128", "uint128", "i8", "int8", "i16", "int16", "i32", "int32", "i64", "int64", "i128", "int128", "uint", "unsigned", "unsigned_integer", "int", "signed", "signed_integer", "integer"]); const endian = $("#schema-editor-endian").value === "unknown" && integerTypes.has(String(type).toLowerCase()) ? "big" : $("#schema-editor-endian").value; const metadata = { origin: "manual", review_status: "confirmed" }; if (selection) Object.assign(metadata, { source_packet_index: selection.packetIndex, source_coordinate_system: selection.coordinateSystem, source_offset: selection.offset, source_width: selection.width }); const field = { id: $("#schema-editor-id").value.trim() || `${name.replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase() || "field"}_${stableClientHash(`${name}:${type}:${JSON.stringify(offset)}:${JSON.stringify(length)}:${coordinate}`)}`, name, description: $("#schema-editor-description").value.trim(), type, offset, length, endian, coordinate_system: coordinate, presence: parseEditorExpression($("#schema-editor-condition").value, "Condition", true), constraints: parseStructuredConstraints(type), metadata }; const nestedText = $("#schema-editor-nested-json").value.trim(); if (nestedText) { const nested = JSON.parse(nestedText); if (!Array.isArray(nested)) throw new Error("Nested fields JSON must be an array"); field.fields = nested; } if ($("#schema-editor-array").checked) { const elementLength = Number($("#schema-editor-array-length").value); if (!Number.isInteger(elementLength) || elementLength < 1) throw new Error("Array element length must be a positive integer"); field.array = { count: parseEditorExpression($("#schema-editor-array-count").value, "Array count", 0), element: { type: $("#schema-editor-array-type").value, offset: 0, length: elementLength, endian } }; } return field; }
 function saveEditorField() { const schema = ensureEditorSchema(); const index = state.editingSchemaField; const previous = index === null || index === undefined ? null : schema.fields[index]; const before = schemaSnapshot(); const field = schemaFieldFromEditor(); if (previous) field.id = previous.id; const authoredBase = state.authoredSchema?.schema_version === 2 ? cloneJson(state.authoredSchema) : cloneJson(schema); authoredBase.fields = Array.isArray(authoredBase.fields) ? authoredBase.fields.slice() : []; if (index === null || index === undefined) authoredBase.fields.push(cloneJson(field)); else authoredBase.fields[index] = cloneJson(field); commitSchemaChange(authoredBase, before); state.editingSchemaField = null; clearSchemaEditor(); }
 function applyReviewedSchema() { try { const schema = validateSchema(ensureEditorSchema()); state.schema = schema; state.authoredSchema = authoredSchemaForValidation() || cloneJson(schema); state.schemaValues = applySchema(schema); renderSchemaEditor(); renderFields(); const needsServer = (Array.isArray(schema.relationships) && schema.relationships.length) || (schema.definitions && Object.keys(schema.definitions).length); setStatus(needsServer ? `Applied reviewed schema to ${state.schemaValues.length} packet(s). Browser preview is bounded; run Schema Validation for authoritative reusable-definition and relationship diagnostics.` : `Applied reviewed schema to ${state.schemaValues.length} packet(s).`); } catch (error) { setStatus(`Schema is not valid: ${error.message}`, true); } }
 function diagnosticText(item) { if (!item || typeof item !== "object") return String(item ?? "unknown diagnostic"); const code = item.code ? `${item.code}: ` : ""; return `${code}${item.message || item.reason || "diagnostic"}`; }
@@ -478,3 +478,344 @@ function initializeExperiments() {
   const schemaExportRow = $("#schema-editor-apply").parentElement; [["kaitai", "Export Kaitai .ksy"], ["wireshark", "Export Wireshark Lua"]].forEach(([format, label]) => { const button = node("button", label, "secondary"); button.type = "button"; button.addEventListener("click", () => exportReviewedSchema(format)); schemaExportRow.append(button); });
 }
 initializeExperiments();
+initializeSchemaWorkbench();
+
+/* Schema Workbench -------------------------------------------------------
+ *
+ * The original editor deliberately kept nested fields behind a JSON escape
+ * hatch.  The workbench below is a small, dependency-free tree editor over
+ * the same declarative Schema V2 document.  It never evaluates expressions
+ * or packet bytes: edits are validated by PacketScopeSchema before they are
+ * committed, and the server remains authoritative for reusable definitions,
+ * relationships, and other unsupported browser previews.
+ */
+function schemaEditorLocator(kind = "root", definition = "", segments = []) {
+  return { kind, definition: definition || "", segments: (segments || []).map((segment) => ({ index: Number(segment.index), array: Boolean(segment.array) })) };
+}
+function schemaEditorBaseFields(schema, locator) {
+  if (locator?.kind === "definition") return schema.definitions?.[locator.definition]?.fields || [];
+  return schema.fields || [];
+}
+function schemaEditorFieldAt(schema, locator) {
+  if (!locator) return null;
+  let fields = schemaEditorBaseFields(schema, locator);
+  let field = null;
+  for (const segment of locator.segments || []) {
+    field = fields?.[segment.index];
+    if (!field) return null;
+    if (segment.array) field = field.array?.element || null;
+    if (!field) return null;
+    fields = field.fields || [];
+  }
+  return field;
+}
+function schemaEditorParentFields(schema, locator) {
+  const segments = locator?.segments || [];
+  if (!segments.length) return schemaEditorBaseFields(schema, locator);
+  if (segments.length === 1) return schemaEditorBaseFields(schema, locator);
+  const parent = schemaEditorFieldAt(schema, schemaEditorLocator(locator.kind, locator.definition, segments.slice(0, -1)));
+  const last = segments[segments.length - 1];
+  if (last.array) return parent?.array ? [parent.array.element] : [];
+  return parent?.fields || [];
+}
+function schemaEditorFieldPath(locator) { return (locator?.segments || []).map((segment) => segment.array ? `[${segment.index}]` : String(segment.index)).join("."); }
+function schemaEditorLocatorLabel(locator) {
+  if (!locator) return "root";
+  const scope = locator.kind === "definition" ? `definition ${locator.definition}` : "root";
+  return locator.segments?.length ? `${scope} / ${schemaEditorFieldPath(locator)}` : scope;
+}
+function schemaEditorSameLocator(left, right) { return JSON.stringify(left || null) === JSON.stringify(right || null); }
+function schemaEditorScopeLocator() {
+  const scope = state.schemaEditorScope || schemaEditorLocator();
+  return schemaEditorLocator(scope.kind, scope.definition, scope.segments);
+}
+function schemaEditorFieldsInDocument(schema) {
+  const result = [];
+  const visit = (fields, scope, prefix = []) => (fields || []).forEach((field, index) => {
+    const locator = schemaEditorLocator(scope.kind, scope.definition, [...prefix, { index }]);
+    result.push({ field, locator });
+    visit(field.fields, scope, [...prefix, { index }]);
+    if (field.array?.element) {
+      const arrayLocator = schemaEditorLocator(scope.kind, scope.definition, [...prefix, { index, array: true }]);
+      result.push({ field: field.array.element, locator: arrayLocator, arrayElement: true });
+      visit(field.array.element.fields, scope, [...prefix, { index, array: true }]);
+    }
+  });
+  visit(schema.fields, schemaEditorLocator("root"), []);
+  Object.entries(schema.definitions || {}).forEach(([name, definition]) => visit(definition.fields, schemaEditorLocator("definition", name), []));
+  return result;
+}
+function schemaEditorReferenceValues(value, refs = []) {
+  if (Array.isArray(value)) value.forEach((item) => schemaEditorReferenceValues(item, refs));
+  else if (value && typeof value === "object") Object.entries(value).forEach(([key, item]) => {
+    if (["field", "ref", "field_ref", "field_id", "target", "target_field", "target_field_id", "source", "source_field_id"].includes(key) && typeof item === "string") refs.push(item);
+    else schemaEditorReferenceValues(item, refs);
+  });
+  return refs;
+}
+function schemaEditorReferenceDiagnostics(schema) {
+  const entries = schemaEditorFieldsInDocument(schema);
+  const known = new Set(entries.flatMap(({ field }) => [field.id, field.name]).filter(Boolean));
+  const diagnostics = [];
+  entries.forEach(({ field, locator }) => schemaEditorReferenceValues(field).forEach((reference) => {
+    if (!known.has(reference) && !Object.keys(schema.definitions || {}).includes(reference)) diagnostics.push({ kind: "missing", locator, reference, field });
+  }));
+  const graph = new Map();
+  entries.forEach(({ field }) => graph.set(field.id, schemaEditorReferenceValues(field).filter((ref) => known.has(ref))));
+  const visiting = new Set(); const visited = new Set();
+  function visit(id, stack = []) {
+    if (visiting.has(id)) { diagnostics.push({ kind: "cycle", fieldId: id, path: [...stack, id] }); return; }
+    if (visited.has(id)) return;
+    visiting.add(id); (graph.get(id) || []).forEach((ref) => visit(ref, [...stack, id])); visiting.delete(id); visited.add(id);
+  }
+  graph.forEach((_, id) => visit(id));
+  return diagnostics;
+}
+function schemaEditorTextField(label, id, value = "", type = "text") {
+  const wrapper = node("label", undefined, "schema-workbench-control"); wrapper.append(node("span", label)); const input = node("input"); input.id = id; input.type = type; input.value = value; wrapper.append(input); return wrapper;
+}
+function schemaEditorSelect(label, id, options = []) {
+  const wrapper = node("label", undefined, "schema-workbench-control"); wrapper.append(node("span", label)); const select = node("select"); select.id = id; options.forEach(([value, text]) => select.append(Object.assign(node("option", text), { value }))); wrapper.append(select); return wrapper;
+}
+function schemaEditorButton(text, className = "secondary") { const button = node("button", text, className); button.type = "button"; return button; }
+function schemaEditorDefinitionNames(schema) { return Object.keys(schema.definitions || {}).sort((a, b) => a.localeCompare(b)); }
+function schemaEditorFieldOptions(schema, includeBlank = true) {
+  const entries = schemaEditorFieldsInDocument(schema); const options = includeBlank ? [["", "No field reference"]] : [];
+  entries.forEach(({ field, locator }) => options.push([field.id, `${field.name || field.id} · ${schemaEditorLocatorLabel(locator)}`]));
+  return options;
+}
+function schemaEditorMakeUi() {
+  if (state.schemaWorkbenchUi) return;
+  state.schemaEditorScope = schemaEditorLocator(); state.schemaEditorTarget = null; state.schemaEditorInsert = { kind: "scope", scope: schemaEditorLocator() };
+  const host = $("#schema-editor-fields"); if (!host) return;
+  const workbench = node("section", undefined, "schema-workbench"); workbench.id = "schema-editor-workbench";
+  const heading = node("div", undefined, "section-heading"); heading.append(node("div", undefined, "schema-workbench-title")); heading.firstChild.append(node("h4", "Structure tree"), node("p", "Select a structure or field to edit it with the existing inspector. IDs stay stable while fields move."));
+  const saveRow = node("div", undefined, "button-row");
+  const save = schemaEditorButton("Save reviewed V2 schema"); save.id = "schema-editor-save";
+  const restoreLabel = node("label", "Restore reviewed V2 schema", "button secondary"); restoreLabel.setAttribute("for", "schema-editor-restore"); const restore = node("input"); restore.id = "schema-editor-restore"; restore.type = "file"; restore.accept = "application/json,.json"; restore.hidden = true; restoreLabel.append(restore);
+  const exportJson = schemaEditorButton("Export exact V2 JSON"); exportJson.id = "schema-editor-export-json";
+  saveRow.append(save, restoreLabel, exportJson); heading.append(saveRow); workbench.append(heading);
+  const definitions = node("div", undefined, "schema-workbench-definitions"); definitions.id = "schema-editor-definitions"; workbench.append(definitions);
+  const tree = node("div", undefined, "schema-workbench-tree"); tree.id = "schema-editor-tree"; workbench.append(tree);
+  const dependencies = node("div", undefined, "schema-workbench-dependencies"); dependencies.id = "schema-editor-dependencies"; workbench.append(dependencies);
+  const relationships = node("div", undefined, "schema-workbench-relationships"); relationships.id = "schema-editor-relationships"; workbench.append(relationships);
+  host.before(workbench); state.schemaWorkbenchUi = workbench;
+  save.addEventListener("click", exportReviewedSchemaJson);
+  exportJson.addEventListener("click", exportReviewedSchemaJson);
+  restore.addEventListener("change", restoreSchemaWorkbenchFile);
+}
+function initializeSchemaWorkbench() { schemaEditorMakeUi(); renderSchemaWorkbench(); }
+
+function schemaEditorRenderDefinitions(schema) {
+  const view = $("#schema-editor-definitions"); if (!view) return; view.replaceChildren();
+  const title = node("h4", "Reusable definitions"); view.append(title);
+  const rootButton = schemaEditorButton("Open root protocol"); rootButton.addEventListener("click", () => { state.schemaEditorScope = schemaEditorLocator(); state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() }; state.schemaEditorTarget = null; clearSchemaEditor(); renderSchemaWorkbench(); }); view.append(rootButton);
+  const controls = node("div", undefined, "button-row");
+  const name = node("input"); name.id = "schema-editor-definition-name"; name.maxLength = 80; name.placeholder = "definition name"; name.setAttribute("aria-label", "New definition name");
+  const add = schemaEditorButton("Add definition"); add.addEventListener("click", () => {
+    const definitionName = name.value.trim();
+    if (!definitionName || !/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(definitionName)) { setStatus("Definition names must start with a letter and contain only letters, numbers, dots, dashes, or underscores.", true); return; }
+    const next = cloneJson(state.authoredSchema || ensureEditorSchema()); next.definitions ||= {};
+    if (next.definitions[definitionName]) { setStatus(`Definition ${definitionName} already exists.`, true); return; }
+    next.definitions[definitionName] = { fields: [], source: { origin: "manual", review_status: "confirmed" } };
+    try { commitSchemaChange(next); state.schemaEditorScope = schemaEditorLocator("definition", definitionName); state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() }; name.value = ""; renderSchemaWorkbench(); setStatus(`Definition ${definitionName} created.`); } catch (error) { setStatus(`Definition could not be created: ${error.message}`, true); }
+  });
+  controls.append(name, add); view.append(controls);
+  const list = node("div", undefined, "schema-definition-list"); const definitions = schemaEditorDefinitionNames(schema);
+  if (!definitions.length) list.append(node("p", "No reusable definitions yet. Add one, then reference it from a structure field.", "muted"));
+  definitions.forEach((definitionName) => {
+    const row = node("div", undefined, "field-row schema-definition-row"); const selected = state.schemaEditorScope?.kind === "definition" && state.schemaEditorScope.definition === definitionName;
+    if (selected) row.classList.add("selected"); row.append(node("strong", definitionName), node("span", `${schema.definitions[definitionName]?.fields?.length || 0} field(s)`));
+    const actions = node("span", undefined, "annotation-actions"); const select = schemaEditorButton(selected ? "Selected" : "Open"); select.disabled = selected; select.addEventListener("click", () => { state.schemaEditorScope = schemaEditorLocator("definition", definitionName); state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() }; state.schemaEditorTarget = null; state.editingSchemaField = null; clearSchemaEditor(); renderSchemaWorkbench(); });
+    const rename = schemaEditorButton("Rename"); rename.addEventListener("click", () => schemaEditorRenameDefinition(definitionName));
+    const duplicate = schemaEditorButton("Duplicate"); duplicate.addEventListener("click", () => schemaEditorDuplicateDefinition(definitionName));
+    const remove = schemaEditorButton("Delete"); remove.addEventListener("click", () => schemaEditorDeleteDefinition(definitionName)); actions.append(select, rename, duplicate, remove); row.append(actions); list.append(row);
+  });
+  view.append(list);
+}
+function schemaEditorRenameDefinition(oldName) {
+  const nextName = window.prompt(`Rename reusable definition ${oldName}`, oldName);
+  if (nextName === null) return;
+  const clean = nextName.trim(); const schema = cloneJson(state.authoredSchema || ensureEditorSchema());
+  if (!clean || !/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(clean) || schema.definitions?.[clean]) { setStatus("Definition name is invalid or already in use.", true); return; }
+  schema.definitions[clean] = schema.definitions[oldName]; delete schema.definitions[oldName];
+  const rewrite = (value) => { if (Array.isArray(value)) return value.forEach(rewrite); if (!value || typeof value !== "object") return; Object.entries(value).forEach(([key, item]) => { if ((key === "definition" || key === "use") && item === oldName) value[key] = clean; else rewrite(item); }); };
+  rewrite(schema.fields); rewrite(schema.relationships); rewrite(schema.definitions);
+  try { commitSchemaChange(schema); if (state.schemaEditorScope?.definition === oldName) state.schemaEditorScope.definition = clean; renderSchemaWorkbench(); setStatus(`Definition renamed to ${clean}; references were updated.`); } catch (error) { setStatus(`Definition could not be renamed: ${error.message}`, true); }
+}
+function schemaEditorDuplicateDefinition(name) {
+  const schema = cloneJson(state.authoredSchema || ensureEditorSchema()); const base = `${name}_copy`; let candidate = base; let index = 2; while (schema.definitions?.[candidate]) candidate = `${base}_${index++}`;
+  schema.definitions ||= {}; schema.definitions[candidate] = cloneJson(schema.definitions[name]);
+  try { commitSchemaChange(schema); state.schemaEditorScope = schemaEditorLocator("definition", candidate); renderSchemaWorkbench(); setStatus(`Definition ${candidate} duplicated. References remain pointed at ${name}.`); } catch (error) { setStatus(`Definition could not be duplicated: ${error.message}`, true); }
+}
+function schemaEditorDeleteDefinition(name) {
+  const schema = cloneJson(state.authoredSchema || ensureEditorSchema()); const references = [];
+  schemaEditorReferenceValues(schema.fields).forEach((reference) => { if (reference === name) references.push(reference); });
+  Object.values(schema.definitions || {}).forEach((definition) => schemaEditorReferenceValues(definition).forEach((reference) => { if (reference === name) references.push(reference); }));
+  if (references.length) { setStatus(`Definition ${name} is still referenced. Remove or retarget ${references.length} reference(s) first.`, true); return; }
+  delete schema.definitions?.[name]; try { commitSchemaChange(schema); state.schemaEditorScope = schemaEditorLocator(); renderSchemaWorkbench(); setStatus(`Definition ${name} deleted.`); } catch (error) { setStatus(`Definition could not be deleted: ${error.message}`, true); }
+}
+function schemaEditorRenderFieldTree(schema) {
+  const view = $("#schema-editor-tree"); if (!view) return; view.replaceChildren();
+  const scope = schemaEditorScopeLocator(); const fields = schemaEditorBaseFields(schema, scope); const title = node("div", undefined, "section-heading"); title.append(node("div", undefined, "schema-workbench-title")); title.firstChild.append(node("h4", `${scope.kind === "definition" ? `Definition: ${scope.definition}` : "Root protocol"}`), node("p", "Add and reorder fields in this scope. A structure's children and an array's element are edited from the tree.")); const add = schemaEditorButton("Add field to scope"); add.addEventListener("click", () => { state.schemaEditorTarget = null; state.schemaEditorInsert = { kind: "scope", scope }; state.editingSchemaField = null; clearSchemaEditor(); renderSchemaWorkbench(); $("#schema-editor-name")?.focus(); }); title.append(add); view.append(title);
+  const render = (field, locator, depth, parent) => {
+    if (depth > 16) return;
+    const row = node("div", undefined, `field-row schema-tree-row depth-${Math.min(depth, 4)}`); row.dataset.fieldId = field.id || ""; row.dataset.schemaPath = schemaEditorLocatorLabel(locator); if (schemaEditorSameLocator(state.schemaEditorTarget, locator)) row.classList.add("selected");
+    const marker = field.definition ? ` · uses ${field.definition}` : field.array ? ` · array ${expressionText(field.array.count)}` : field.fields ? ` · ${field.fields.length} child field(s)` : "";
+    row.append(node("strong", `${field.name || field.id} · ${field.id}`), node("span", `${field.type || "bytes"}${marker} · offset ${expressionText(field.offset)} · length ${expressionText(field.length)}`));
+    const actions = node("span", undefined, "annotation-actions"); const edit = schemaEditorButton("Inspect"); edit.addEventListener("click", () => { state.schemaEditorTarget = locator; state.schemaEditorInsert = { kind: "scope", scope }; state.editingSchemaField = 0; populateSchemaEditor(field, locator); renderSchemaWorkbench(); $("#schema-editor-name")?.focus(); });
+    const up = schemaEditorButton("↑"); up.title = "Move field earlier"; up.disabled = !parent || parent.index === 0; up.addEventListener("click", () => schemaEditorMoveField(locator, -1));
+    const down = schemaEditorButton("↓"); down.title = "Move field later"; down.disabled = !parent || parent.index >= fields.length - 1; down.addEventListener("click", () => schemaEditorMoveField(locator, 1));
+    const duplicate = schemaEditorButton("Duplicate"); duplicate.addEventListener("click", () => schemaEditorDuplicateField(locator));
+    const remove = schemaEditorButton("Delete"); remove.addEventListener("click", () => schemaEditorDeleteField(locator)); actions.append(edit, up, down, duplicate, remove); row.append(actions); view.append(row);
+    if (field.fields || field.type === "struct") { const childAdd = schemaEditorButton("Add child"); childAdd.addEventListener("click", () => { state.schemaEditorTarget = null; state.schemaEditorInsert = { kind: "children", parent: locator }; state.editingSchemaField = null; clearSchemaEditor(); renderSchemaWorkbench(); }); row.append(childAdd); (field.fields || []).slice(0, 1000).forEach((child, index) => render(child, schemaEditorLocator(scope.kind, scope.definition, [...locator.segments, { index }]), depth + 1, { index })); }
+    if (field.array?.element) { const elementSegments = locator.segments.slice(0, -1).concat([{ index: locator.segments.at(-1)?.index ?? 0, array: true }]); const elementLocator = schemaEditorLocator(scope.kind, scope.definition, elementSegments); const elementRow = node("div", undefined, "field-row schema-array-editor-row"); elementRow.append(node("span", `↳ element · ${field.array.element.type || "bytes"} · ${field.array.element.id || "element"}`)); const inspect = schemaEditorButton("Inspect element"); inspect.addEventListener("click", () => { state.schemaEditorTarget = elementLocator; state.schemaEditorInsert = { kind: "scope", scope }; state.editingSchemaField = 0; populateSchemaEditor(field.array.element, elementLocator); renderSchemaWorkbench(); }); elementRow.append(inspect); view.append(elementRow); if (field.array.element.fields) field.array.element.fields.forEach((child, index) => render(child, schemaEditorLocator(scope.kind, scope.definition, [...elementLocator.segments, { index }]), depth + 2, { index })); }
+  };
+  if (!fields.length) view.append(node("p", "No fields in this scope. Add a field to begin building the protocol.", "muted")); fields.slice(0, 1000).forEach((field, index) => render(field, schemaEditorLocator(scope.kind, scope.definition, [{ index }]), 0, { index }));
+}
+function schemaEditorRenderDependencies(schema) {
+  const view = $("#schema-editor-dependencies"); if (!view) return; view.replaceChildren(node("h4", "Dependency inspector"));
+  const diagnostics = schemaEditorReferenceDiagnostics(schema); const entries = schemaEditorFieldsInDocument(schema);
+  if (!entries.length) { view.append(node("p", "Add fields to inspect dependencies.", "muted")); return; }
+  entries.slice(0, 1000).forEach(({ field, locator }) => {
+    const refs = schemaEditorReferenceValues(field); const row = node("div", undefined, "dependency-row"); row.append(node("strong", field.name || field.id), node("span", refs.length ? refs.map((reference) => `→ ${reference}`).join(" ") : "No field references"));
+    const issues = diagnostics.filter((item) => item.locator && schemaEditorSameLocator(item.locator, locator) || item.fieldId === field.id); issues.forEach((issue) => row.append(node("span", issue.kind === "cycle" ? `cycle: ${(issue.path || []).join(" → ")}` : `missing: ${issue.reference}`, "schema-dependency-error"))); view.append(row);
+  });
+  if (!diagnostics.length) view.append(node("p", "All visible field references resolve; server validation still remains authoritative for reusable scopes and relationships.", "muted"));
+}
+function schemaEditorRenderRelationships(schema) {
+  const view = $("#schema-editor-relationships"); if (!view) return; view.replaceChildren(node("h4", "Length and checksum relationships"), node("p", "Relationships are validated by the Python evaluator. Add only reviewed relationships; unsupported or incomplete states remain visible in validation.", "muted"));
+  const form = node("div", undefined, "schema-relationship-form"); form.append(schemaEditorTextField("Relationship ID", "schema-rel-id", "relationship")); form.append(schemaEditorSelect("Kind", "schema-rel-kind", [["length", "Length"], ["checksum", "Checksum"]])); form.append(schemaEditorSelect("Source field", "schema-rel-field", schemaEditorFieldOptions(schema, false))); form.append(schemaEditorSelect("Target field", "schema-rel-target", schemaEditorFieldOptions(schema, true))); form.append(schemaEditorSelect("Algorithm", "schema-rel-algorithm", [["CRC-8", "CRC-8"], ["CRC-16/CCITT-FALSE", "CRC-16/CCITT-FALSE"], ["CRC-32", "CRC-32"], ["XOR-8", "XOR-8"], ["ADDITIVE-8", "ADDITIVE-8"], ["ADDITIVE-16", "ADDITIVE-16"]])); form.append(schemaEditorTextField("Include ranges (JSON)", "schema-rel-include", "[[0, 1]]")); form.append(schemaEditorTextField("Exclude ranges (JSON)", "schema-rel-exclude", "[]")); const add = schemaEditorButton("Add relationship"); add.addEventListener("click", () => schemaEditorAddRelationship(schema)); form.append(add); view.append(form);
+  const list = node("div", undefined, "schema-relationship-list"); (schema.relationships || []).forEach((relationship, index) => { const row = node("div", undefined, "field-row"); row.append(node("strong", relationship.id || `relationship-${index}`), node("span", `${relationship.kind || "checksum"} · ${relationship.field_id || relationship.checksum_field_id || "?"} → ${relationship.target_field_id || "coverage"}`)); const remove = schemaEditorButton("Delete"); remove.addEventListener("click", () => { const next = cloneJson(state.authoredSchema || schema); next.relationships.splice(index, 1); try { commitSchemaChange(next); renderSchemaWorkbench(); } catch (error) { setStatus(`Relationship could not be removed: ${error.message}`, true); } }); row.append(remove); list.append(row); }); if (!(schema.relationships || []).length) list.append(node("p", "No relationships have been declared.", "muted")); view.append(list);
+}
+function renderSchemaWorkbench() { schemaEditorMakeUi(); const schema = ensureEditorSchema(); schemaEditorRenderDefinitions(schema); schemaEditorRenderFieldTree(schema); schemaEditorRenderDependencies(schema); schemaEditorRenderRelationships(schema); renderSchemaSelectionSource(); updateSchemaHistoryButtons(); }
+
+function schemaEditorCloneForChange() { return cloneJson(state.authoredSchema?.schema_version === 2 ? state.authoredSchema : ensureEditorSchema()); }
+function schemaEditorListForInsert(schema, insert) {
+  if (!insert || insert.kind === "scope") return schemaEditorBaseFields(schema, insert?.scope || schemaEditorScopeLocator());
+  const parent = schemaEditorFieldAt(schema, insert.parent); if (!parent) throw new Error("parent structure no longer exists");
+  if (insert.kind === "children") { parent.fields ||= []; return parent.fields; }
+  throw new Error("unsupported schema insertion target");
+}
+function schemaEditorSetAtLocator(schema, locator, field) {
+  const segments = locator?.segments || []; if (!segments.length) throw new Error("field locator is empty");
+  const parentFields = schemaEditorParentFields(schema, locator); const last = segments[segments.length - 1];
+  if (last.array) { const parent = schemaEditorFieldAt(schema, schemaEditorLocator(locator.kind, locator.definition, segments.slice(0, -1).concat([{ index: last.index }]))); if (!parent?.array) throw new Error("array element no longer exists"); parent.array.element = field; return; }
+  parentFields[last.index] = field;
+}
+function schemaEditorRemoveAtLocator(schema, locator) {
+  const segments = locator?.segments || []; if (!segments.length) throw new Error("field locator is empty");
+  const last = segments[segments.length - 1]; if (last.array) throw new Error("array elements are edited with their parent array");
+  const parentFields = schemaEditorParentFields(schema, locator); parentFields.splice(last.index, 1);
+}
+function schemaEditorReferencedBy(schema, field) {
+  const names = new Set([field?.id, field?.name].filter(Boolean)); const references = [];
+  schemaEditorFieldsInDocument(schema).forEach(({ field: candidate, locator }) => { if (candidate === field) return; const refs = schemaEditorReferenceValues(candidate).filter((reference) => names.has(reference)); refs.forEach((reference) => references.push({ locator, reference })); });
+  (schema.relationships || []).forEach((relationship) => { if (schemaEditorReferenceValues(relationship).some((reference) => names.has(reference))) references.push({ locator: null, reference: relationship.id || "relationship" }); });
+  return references;
+}
+function schemaEditorMoveField(locator, direction) {
+  const schema = schemaEditorCloneForChange(); const segments = locator?.segments || []; const last = segments.at(-1); if (!last || last.array) return;
+  const fields = schemaEditorParentFields(schema, locator); const targetIndex = last.index + direction; if (targetIndex < 0 || targetIndex >= fields.length) return;
+  [fields[last.index], fields[targetIndex]] = [fields[targetIndex], fields[last.index]];
+  const nextLocator = schemaEditorLocator(locator.kind, locator.definition, segments.slice(0, -1).concat([{ index: targetIndex }]));
+  try { commitSchemaChange(schema); state.schemaEditorTarget = nextLocator; renderSchemaWorkbench(); setStatus(`Moved ${fields[targetIndex].name || fields[targetIndex].id}; stable field IDs were preserved.`); } catch (error) { setStatus(`Field could not be moved: ${error.message}`, true); }
+}
+function schemaEditorDuplicateField(locator) {
+  const schema = schemaEditorCloneForChange(); const field = schemaEditorFieldAt(schema, locator); if (!field) return; const fields = schemaEditorParentFields(schema, locator); const copy = cloneJson(field); const base = `${copy.id || "field"}_copy`; let id = base; let count = 2; const ids = new Set(fields.map((item) => item.id)); while (ids.has(id)) id = `${base}_${count++}`; copy.id = id; copy.name = `${copy.name || copy.id} copy`; const index = locator.segments.at(-1)?.index ?? fields.length - 1; fields.splice(index + 1, 0, copy); try { commitSchemaChange(schema); state.schemaEditorTarget = schemaEditorLocator(locator.kind, locator.definition, locator.segments.slice(0, -1).concat([{ index: index + 1 }])); renderSchemaWorkbench(); setStatus(`Field duplicated as ${id}.`); } catch (error) { setStatus(`Field could not be duplicated: ${error.message}`, true); }
+}
+function schemaEditorDeleteField(locator) {
+  const schema = schemaEditorCloneForChange(); const field = schemaEditorFieldAt(schema, locator); if (!field) return; const references = schemaEditorReferencedBy(schema, field);
+  if (references.length) { const detail = references.slice(0, 4).map((item) => item.reference).join(", "); setStatus(`Cannot delete ${field.id}; it is referenced by ${detail}. Retarget those dependencies first.`, true); return; }
+  try { schemaEditorRemoveAtLocator(schema, locator); commitSchemaChange(schema); state.schemaEditorTarget = null; state.editingSchemaField = null; clearSchemaEditor(); renderSchemaWorkbench(); setStatus(`Field ${field.id} deleted.`); } catch (error) { setStatus(`Field could not be deleted: ${error.message}`, true); }
+}
+function schemaEditorAddRelationship(schema) {
+  try {
+    const id = $("#schema-rel-id").value.trim(); const kind = $("#schema-rel-kind").value; const fieldId = $("#schema-rel-field").value; const targetId = $("#schema-rel-target").value; if (!id || !fieldId) throw new Error("relationship ID and source field are required");
+    const next = cloneJson(state.authoredSchema || schema); next.relationships ||= []; if (next.relationships.some((item) => item.id === id)) throw new Error(`relationship ${id} already exists`);
+    let relationship = { id, kind, field_id: fieldId }; if (kind === "length") { if (!targetId) throw new Error("length relationships require a target field"); relationship.target_field_id = targetId; }
+    else { relationship.algorithm = $("#schema-rel-algorithm").value; relationship.byte_order = "big"; const include = JSON.parse($("#schema-rel-include").value || "[]"); const exclude = JSON.parse($("#schema-rel-exclude").value || "[]"); if (!Array.isArray(include) || !Array.isArray(exclude)) throw new Error("coverage ranges must be JSON arrays"); relationship.covered_ranges = { include, exclude }; }
+    next.relationships.push(relationship); commitSchemaChange(next); renderSchemaWorkbench(); setStatus(`Relationship ${id} added; server validation will report its status.`);
+  } catch (error) { setStatus(`Relationship is not valid: ${error.message}`, true); }
+}
+function schemaEditorFieldFromForm() {
+  const field = schemaFieldFromEditorOriginal();
+  const definition = $("#schema-editor-definition")?.value || ""; if (definition) { field.definition = definition; field.type = "struct"; delete field.fields; }
+  const offsetReference = $("#schema-editor-offset-reference")?.value; if (offsetReference) { const add = Number($("#schema-editor-offset-add")?.value || 0); field.offset = add ? { field: offsetReference, add } : { field: offsetReference }; }
+  const lengthReference = $("#schema-editor-length-reference")?.value; if (lengthReference) field.length = { field: lengthReference };
+  const countReference = $("#schema-editor-array-count-reference")?.value; if (field.array && countReference) field.array.count = { field: countReference };
+  const conditionReference = $("#schema-editor-condition-reference")?.value; if (conditionReference) { const valueText = $("#schema-editor-condition-value")?.value || "1"; let value; try { value = JSON.parse(valueText); } catch { value = valueText; } field.presence = { op: $("#schema-editor-condition-op")?.value || "eq", args: [{ field: conditionReference }, value] }; }
+  return field;
+}
+/* Keep the pre-workbench form parser intact as a private implementation so
+ * the structured controls above can add common references without changing
+ * the existing constraint semantics. */
+function saveEditorField() {
+  const schema = ensureEditorSchema(); const before = schemaSnapshot(); const field = schemaEditorFieldFromForm(); const target = state.schemaEditorTarget || (state.editingSchemaField === null || state.editingSchemaField === undefined ? null : schemaEditorLocator("root", "", [{ index: state.editingSchemaField }]));
+  const authored = schemaEditorCloneForChange();
+  try {
+    if (target) { const previous = schemaEditorFieldAt(authored, target); if (!previous) throw new Error("selected field no longer exists"); field.id = previous.id; schemaEditorSetAtLocator(authored, target, field); }
+    else { const list = schemaEditorListForInsert(authored, state.schemaEditorInsert || { kind: "scope", scope: schemaEditorScopeLocator() }); if (list.some((item) => item.id === field.id)) throw new Error(`field ID ${field.id} already exists in this scope`); list.push(field); }
+    commitSchemaChange(authored, before); state.schemaEditorTarget = null; state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() }; state.editingSchemaField = null; clearSchemaEditor(); renderSchemaWorkbench();
+  } catch (error) { throw error; }
+}
+function populateSchemaEditor(field, locator = null) {
+  populateSchemaEditorOriginal(field); state.schemaEditorTarget = locator; state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() };
+  const schema = ensureEditorSchema(); schemaEditorEnsureReferenceControls(schema); $("#schema-editor-definition").value = field.definition || "";
+  const offset = field.offset && typeof field.offset === "object" ? field.offset.field || "" : ""; $("#schema-editor-offset-reference").value = offset; $("#schema-editor-offset-add").value = field.offset?.add || 0;
+  $("#schema-editor-length-reference").value = field.length && typeof field.length === "object" ? field.length.field || "" : ""; $("#schema-editor-array-count-reference").value = field.array?.count && typeof field.array.count === "object" ? field.array.count.field || "" : "";
+  const condition = field.presence && typeof field.presence === "object" ? field.presence : null; const conditionField = condition?.args?.[0]?.field || ""; $("#schema-editor-condition-reference").value = conditionField; $("#schema-editor-condition-op").value = condition?.op || "eq"; $("#schema-editor-condition-value").value = condition?.args?.[1] === undefined ? "1" : valueForEditor(condition.args[1]); renderSchemaSelectionSource();
+}
+function clearSchemaEditor() { clearSchemaEditorOriginal(); state.schemaEditorTarget = null; state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() }; if (state.schemaWorkbenchUi) schemaEditorEnsureReferenceControls(ensureEditorSchema()); }
+function schemaEditorEnsureReferenceControls(schema) {
+  const form = $("#schema-editor-form"); if (!form || $("#schema-editor-definition")) return;
+  const marker = form.querySelector(".schema-constraints");
+  const controls = node("section", undefined, "schema-reference-controls"); controls.append(node("h4", "Common dependency controls"), node("p", "These controls create declarative references; the JSON fields remain available for advanced expressions."));
+  const grid = node("div", undefined, "constraint-grid");
+  const definitions = [["", "Inline structure"], ...schemaEditorDefinitionNames(schema).map((name) => [name, `Reusable: ${name}`])]; const definitionControl = schemaEditorSelect("Reusable definition", "schema-editor-definition", definitions);
+  const options = schemaEditorFieldOptions(schema); const offsetControl = schemaEditorSelect("Offset reference", "schema-editor-offset-reference", options); const offsetAdd = schemaEditorTextField("Offset add", "schema-editor-offset-add", "0", "number");
+  const lengthControl = schemaEditorSelect("Length reference", "schema-editor-length-reference", options); const countControl = schemaEditorSelect("Array count reference", "schema-editor-array-count-reference", options); const conditionControl = schemaEditorSelect("Condition field", "schema-editor-condition-reference", options); const conditionOp = schemaEditorSelect("Condition operator", "schema-editor-condition-op", [["eq", "equals"], ["ne", "not equal"], ["gt", "greater than"], ["gte", "at least"], ["lt", "less than"], ["lte", "at most"]]); const conditionValue = schemaEditorTextField("Condition value (JSON)", "schema-editor-condition-value", "1");
+  [definitionControl, offsetControl, offsetAdd, lengthControl, countControl, conditionControl, conditionOp, conditionValue].forEach((control) => grid.append(control)); controls.append(grid); if (marker) form.insertBefore(controls, marker); else form.prepend(controls);
+}
+function schemaEditorRefreshReferenceControls(schema) {
+  schemaEditorEnsureReferenceControls(schema);
+  const fields = schemaEditorFieldOptions(schema); ["schema-editor-offset-reference", "schema-editor-length-reference", "schema-editor-array-count-reference", "schema-editor-condition-reference"].forEach((id) => { const select = $(`#${id}`); if (!select) return; const value = select.value; select.replaceChildren(); fields.forEach(([key, text]) => select.append(Object.assign(node("option", text), { value: key }))); select.value = fields.some(([key]) => key === value) ? value : ""; });
+  const definition = $("#schema-editor-definition"); if (definition) { const value = definition.value; definition.replaceChildren(Object.assign(node("option", "Inline structure"), { value: "" })); schemaEditorDefinitionNames(schema).forEach((name) => definition.append(Object.assign(node("option", `Reusable: ${name}`), { value: name }))); definition.value = schemaEditorDefinitionNames(schema).includes(value) ? value : ""; }
+}
+function renderSchemaEditor() {
+  schemaEditorMakeUi(); const schema = ensureEditorSchema(); schemaEditorRefreshReferenceControls(schema); schemaEditorRenderDefinitions(schema); schemaEditorRenderFieldTree(schema); schemaEditorRenderDependencies(schema); schemaEditorRenderRelationships(schema); renderSchemaLegacyFieldList(schema); renderSchemaSelectionSource(); updateSchemaHistoryButtons();
+}
+function renderSchemaLegacyFieldList(schema) {
+  const view = $("#schema-editor-fields"); if (!view) return; view.replaceChildren(); const fields = schema.fields || [];
+  fields.slice(0, 1000).forEach((field, index) => {
+    const row = node("div", undefined, "field-row schema-editor-row"); const constraints = Object.keys(field.constraints || {}).length; row.append(node("strong", `${field.name} · ${field.id}`), node("span", `${field.type || "bytes"} · offset ${expressionText(field.offset)} · length ${expressionText(field.length)} · ${field.endian || "unknown"}${field.array ? ` · array count ${expressionText(field.array.count)}` : ""}${field.fields ? ` · ${field.fields.length} nested` : ""}`), node("span", `${field.description || "No description."}${constraints ? ` · ${constraints} constraint(s)` : ""}`));
+    const actions = node("span", undefined, "annotation-actions"); const edit = schemaEditorButton("Edit"); edit.addEventListener("click", () => { const locator = schemaEditorLocator("root", "", [{ index }]); state.schemaEditorTarget = locator; state.schemaEditorScope = schemaEditorLocator(); populateSchemaEditor(field, locator); renderSchemaWorkbench(); $("#schema-editor-name")?.focus(); }); const remove = schemaEditorButton("Remove"); remove.addEventListener("click", () => schemaEditorDeleteField(schemaEditorLocator("root", "", [{ index }]))); actions.append(edit, remove); row.append(actions); view.append(row);
+  });
+  if (!fields.length) view.append(node("p", "No reviewed fields yet.", "muted"));
+}
+function exportReviewedSchemaJson() {
+  try { const schema = validateSchema(ensureEditorSchema()); const blob = new Blob([JSON.stringify(state.authoredSchema || schema, null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${state.result?.source?.name || "packetscope-protocol"}.schema-v2.json`; link.click(); URL.revokeObjectURL(link.href); setStatus("Reviewed Schema V2 saved without losing nested definitions or relationships."); } catch (error) { setStatus(`Schema cannot be saved: ${error.message}`, true); }
+}
+async function restoreSchemaFile(file) {
+  if (!file || file.size > 2 * 1024 * 1024) throw new Error("Protocol schema is too large."); const authored = JSON.parse(await file.text()); const schema = validateSchema(authored); if (!state.result) throw new Error("load a capture before applying a schema"); state.authoredSchema = cloneJson(authored); state.schema = schema; state.schemaValues = applySchema(schema); state.schemaUndo = []; state.schemaRedo = []; state.schemaEditorTarget = null; state.schemaEditorScope = schemaEditorLocator(); state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() }; state.editingSchemaField = null; state.schemaEditorSelection = null; renderFields(); renderSchemaEditor(); updateSchemaHistoryButtons(); setStatus(`Restored reviewed schema with ${schemaEditorFieldsInDocument(schema).length} visible field node(s).`);
+}
+async function restoreSchemaFileFromInput(event) { try { await restoreSchemaFile(event.target.files[0]); } catch (error) { setStatus(`Protocol schema is not valid: ${error.message}`, true); } finally { event.target.value = ""; } }
+function restoreSchemaWorkbenchFile(event) { restoreSchemaFileFromInput(event); }
+function schemaEditorInstallRestoreAlias() { const input = $("#schema-editor-restore"); if (input && !input.dataset.bound) { input.dataset.bound = "true"; input.addEventListener("change", restoreSchemaWorkbenchFile); } }
+function exportProject() {
+  if (!state.result) return; const copy = cloneJson(state.result); copy.annotations = state.annotations; if (state.authoredSchema || state.schema) copy.authoredSchema = cloneJson(state.authoredSchema || state.schema); copy.project = { schema_version: 2, content_hash: contentHash(copy.packets), authored_schema: Boolean(copy.authoredSchema) };
+  const blob = new Blob([JSON.stringify(copy, null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${state.result.source?.name || "packetscope-project"}.json`; link.click(); URL.revokeObjectURL(link.href); setStatus(copy.authoredSchema ? "Project exported with annotations and the reviewed schema." : "Project exported with annotations.");
+}
+function loadResult(result, options = {}) {
+  validateProject(result); const priorAnnotations = state.annotations; state.result = result; state.selectedHypothesis = null; $("#stream-view").hidden = true;
+  if (!options.preserveAnnotations) { state.schema = null; state.authoredSchema = null; state.schemaValues = []; state.hexSelection = null; }
+  const imported = Array.isArray(result.annotations) ? result.annotations.filter(validAnnotation).slice(0, 1000) : []; let saved = [];
+  if (!options.preserveAnnotations && options.restoreLocal !== false) { try { const candidate = JSON.parse(localStorage.getItem(sourceKey()) || "[]"); saved = Array.isArray(candidate) ? candidate.filter(validAnnotation).slice(0, 1000) : []; } catch { saved = []; } }
+  state.annotations = options.preserveAnnotations ? priorAnnotations.slice(0, 1000) : (imported.length ? imported : saved); state.undo = []; state.redo = []; state.schemaUndo = []; state.schemaRedo = []; state.editingAnnotation = null; state.editingSchemaField = null; state.schemaEditorSelection = null; state.schemaEditorTarget = null; state.schemaEditorScope = schemaEditorLocator(); state.schemaEditorInsert = { kind: "scope", scope: schemaEditorScopeLocator() }; $("#annotation-submit").textContent = "Add annotation"; state.packetQuery = options.preserveAnnotations ? state.packetQuery : ""; $("#packet-search").value = state.packetQuery; state.demoProfile = result.demo?.profile || null;
+  if (!options.preserveAnnotations && result.authoredSchema) { try { state.authoredSchema = cloneJson(result.authoredSchema); state.schema = validateSchema(result.authoredSchema); } catch (error) { setStatus(`Saved project schema was ignored: ${error.message}`, true); state.authoredSchema = null; state.schema = null; } }
+  $("#results").hidden = false; $("#demo-evaluate").hidden = !state.demoProfile; render(); if (state.schema) { state.schemaValues = applySchema(state.schema); renderFields(); renderSchemaEditor(); } updateHexSelectionControls();
+}
+function validateProject(value) { if (!value || typeof value !== "object" || !Array.isArray(value.packets) || value.packets.length > 100000) throw new Error("packet list is missing or too large"); if (value.schema_version !== undefined && value.schema_version !== 2) throw new Error("unsupported schema version"); if (Array.isArray(value.annotations) && value.annotations.length > 1000) throw new Error("too many annotations"); if (value.project?.schema_version !== undefined && ![1, 2].includes(value.project.schema_version)) throw new Error("unsupported project schema version"); if (value.authoredSchema !== undefined) validateSchema(value.authoredSchema); }
+function exportReviewedSchema(format) { try { const schema = validateSchema(ensureEditorSchema()); const responsePromise = fetch(`/api/schema/export/${format}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schema: state.authoredSchema || schema }) }); responsePromise.then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error || "schema export failed"); const extension = format === "kaitai" ? "ksy" : "lua"; const blob = new Blob([result.content], { type: "text/plain" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `packetscope-protocol.${extension}`; link.click(); URL.revokeObjectURL(link.href); setStatus(`${format === "kaitai" ? "Kaitai" : "Wireshark Lua"} export downloaded${result.warnings?.length ? ` with ${result.warnings.length} explicit warning(s)` : ""}.`); }).catch((error) => setStatus(error.message, true)); } catch (error) { setStatus(error.message, true); } }
+initializeSchemaWorkbench = initializeSchemaWorkbench; // keep the initialization call above explicit for older browsers
+schemaEditorInstallRestoreAlias();

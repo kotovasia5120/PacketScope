@@ -120,3 +120,26 @@ button { border: 0; border-radius: 8px; padding: 11px 16px; font: inherit; font-
 .schema-validation-field > strong { color: var(--accent-2); }
 .schema-validation-list { display: grid; gap: 8px; }
 .schema-validation-list h4 { margin: 4px 0 0; color: var(--accent-2); }
+.schema-workbench { display: grid; gap: 12px; margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #0b1420; }
+.schema-workbench h4 { margin: 0 0 4px; color: var(--accent); }
+.schema-workbench p { margin: 0 0 8px; }
+.schema-workbench-title { flex: 1; }
+.schema-workbench-definitions, .schema-workbench-tree, .schema-workbench-dependencies, .schema-workbench-relationships { display: grid; gap: 8px; }
+.schema-definition-list, .schema-relationship-list { display: grid; gap: 6px; }
+.schema-definition-row.selected, .schema-tree-row.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.schema-tree-row { grid-template-columns: minmax(180px, .8fr) minmax(250px, 1fr) auto; align-items: center; }
+.schema-tree-row.depth-1 { margin-left: 18px; }
+.schema-tree-row.depth-2 { margin-left: 36px; }
+.schema-tree-row.depth-3 { margin-left: 54px; }
+.schema-tree-row.depth-4 { margin-left: 72px; }
+.schema-array-editor-row { margin-left: 28px; border-style: dashed; grid-template-columns: 1fr auto; }
+.schema-reference-controls { width: 100%; flex-basis: 100%; margin-top: 8px; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; }
+.schema-reference-controls h4 { margin: 0 0 4px; color: var(--accent-2); }
+.schema-workbench-control { min-width: 160px; }
+.schema-workbench-control span { display: block; margin-bottom: 4px; color: var(--muted); font-size: .86rem; }
+.schema-workbench-control input, .schema-workbench-control select { width: 100%; }
+.dependency-row { display: grid; grid-template-columns: minmax(130px, .6fr) minmax(200px, 1.5fr) minmax(180px, 1fr); gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.schema-dependency-error { color: var(--danger); }
+.schema-relationship-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; align-items: end; }
+.schema-relationship-form button { align-self: end; }
+@media (max-width: 800px) { .schema-tree-row, .dependency-row { grid-template-columns: 1fr; } .schema-tree-row .annotation-actions, .schema-array-editor-row button { justify-self: start; } }
