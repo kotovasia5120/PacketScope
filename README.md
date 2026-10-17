@@ -240,7 +240,7 @@ confirmed merely because a heuristic matched.
 ## Architecture and priorities
 
 See [`docs/architecture.md`](docs/architecture.md) and
-[`docs/plan.md`](docs/plan.md). Contributor behavior is documented in
+[`docs/plan.md`](docs/plan.md). The current Phase 14–16 checkpoint is [`docs/phase14-16-progress.md`](phase14-16-progress.md). Contributor behavior is documented in
 [`AGENTS.md`](AGENTS.md).
 
 ## Verification record

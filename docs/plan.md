@@ -214,6 +214,19 @@ syntax/E2E and evaluation commands. Docker build/offline container tests and a
 hosted GitHub Actions run remain **UNVERIFIED** until an environment with those
 capabilities performs them; no local source-only result may promote either gate.
 
+## Phase 14–16 continuation checkpoint
+
+The current implementation completes the local Schema V2 constraint and
+independent-capture validation slices, integrates normalized JSONL/UART/CAN
+imports through the shared pipeline, and adds reusable-definition backend
+semantics, browser undo/redo, and HEX-to-field creation. The browser and Python
+engines share a bounded parity fixture and canonical V1 migration identity.
+
+The detailed status, exact checks, quality metrics, and environmental blockers
+are recorded in [`docs/phase14-16-progress.md`](phase14-16-progress.md).
+Reusable-definition hierarchy editing, expanded interoperability, dedicated
+validation benchmarks, Docker, and hosted CI remain partial or unverified.
+
 ## Phase 11–13 continuation checkpoint
 
 The first Schema V2 vertical slice is implemented and verified locally. The
