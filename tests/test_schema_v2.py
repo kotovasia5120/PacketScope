@@ -217,6 +217,37 @@ class SchemaV2Tests(unittest.TestCase):
         truncated_result = apply_schema(truncated, [Packet(0, b"x")])
         self.assertEqual(truncated_result["values"][0]["fields"][0]["status"], "OUT_OF_BOUNDS")
 
+    def test_validation_completeness_counts_distinguish_incomplete_limits_and_unsupported(self):
+        incomplete = validate_capture_against_schema({
+            "schema_version": 2,
+            "fields": [{"id": "body", "type": "bytes", "offset": 0, "length": 2}],
+        }, [Packet(0, b"x")])
+        self.assertEqual(incomplete["packets"][0]["status"], "incomplete")
+        self.assertEqual(incomplete["summary"]["fully_validated_packets"], 0)
+        self.assertEqual(incomplete["summary"]["incomplete_packets"], 1)
+        self.assertEqual(incomplete["summary"]["validation_completeness"], "partial")
+
+        limited = validate_capture_against_schema({
+            "schema_version": 2,
+            "budgets": {"max_output_fields": 1},
+            "fields": [
+                {"id": "first", "type": "uint8", "offset": 0, "length": 1},
+                {"id": "second", "type": "uint8", "offset": 1, "length": 1},
+            ],
+        }, [Packet(1, b"xy")])
+        self.assertEqual(limited["packets"][0]["status"], "incomplete")
+        self.assertEqual(limited["summary"]["resource_limit_termination_reason"], "result_output_limit")
+        self.assertEqual(limited["summary"]["validation_completeness"], "truncated")
+
+        unsupported = validate_capture_against_schema({
+            "schema_version": 2,
+            "fields": [{"id": "vendor", "type": "vendor-specific", "offset": 0, "length": 1}],
+        }, [Packet(2, b"x")])
+        self.assertEqual(unsupported["packets"][0]["status"], "unsupported")
+        self.assertEqual(unsupported["summary"]["unsupported_packets"], 1)
+        self.assertEqual(unsupported["summary"]["unsupported_fields"], 1)
+        self.assertEqual(unsupported["summary"]["validation_completeness"], "partial")
+
     def test_reviewed_checksum_relationships_validate_using_explicit_ranges(self):
         body = b"abc"
         checksum = compute_crc(body + b"z", STANDARD_CRC[0])

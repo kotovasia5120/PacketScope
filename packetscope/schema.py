@@ -210,10 +210,15 @@ def _validate_capture_against_schema_v1(
         "summary": {
             "packet_count": len(diagnostics),
             "decoded_packets": decoded_packets,
+            "fully_validated_packets": sum(item["status"] in {"ok", "violated"} for item in diagnostics),
             "incomplete_packets": sum(item["status"] == "incomplete" for item in diagnostics),
+            "invalid_packets": sum(item["status"] == "violated" for item in diagnostics),
+            "unsupported_packets": sum(item["status"] == "unsupported" for item in diagnostics),
             "missing_fields": missing_fields,
             "constraint_violations": constraint_violations,
             "unsupported_fields": unsupported_fields,
+            "application_status": "RESOLVED",
+            "validation_completeness": "partial" if any(item["status"] in {"incomplete", "unsupported"} for item in diagnostics) else "complete",
         },
         "packets": diagnostics,
     }
@@ -2860,6 +2865,39 @@ def _apply_schema_v2(schema: dict[str, Any], packets: Iterable[Packet], max_pack
     return result
 
 
+_V2_INCOMPLETE_DIAGNOSTIC_CODES = frozenset({
+    "missing_reference", "dependency_status", "coordinate_unavailable",
+    "truncated_field", "array_status", "length_dependency", "length_absent",
+    "checksum_location", "checksum_coverage", "checksum_field",
+})
+_V2_UNSUPPORTED_DIAGNOSTIC_CODES = frozenset({
+    "unsupported_type", "unsupported_shape", "integer_width", "integer_endian",
+    "text_decode", "array_element", "length_value", "length_mode",
+    "checksum_algorithm", "relationship_kind", "coordinate_system",
+})
+_V2_RESOURCE_DIAGNOSTIC_CODES = frozenset({
+    "packet_count", "output_fields", "array_items", "array_items_total",
+    "nesting", "field_length", "packet_budget", "packet_bytes",
+    "expression_depth", "expression_arguments", "multiply_limit",
+    "expression_value",
+})
+
+
+def _v2_result_nodes(value: Any) -> Iterable[dict[str, Any]]:
+    """Walk bounded public field output without interpreting packet bytes."""
+    pending: list[Any] = [value]
+    while pending:
+        candidate = pending.pop()
+        if isinstance(candidate, dict):
+            yield candidate
+            for key in ("fields", "items"):
+                nested = candidate.get(key)
+                if isinstance(nested, list):
+                    pending.extend(reversed(nested))
+        elif isinstance(candidate, list):
+            pending.extend(reversed(candidate))
+
+
 def validate_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Validate either the unchanged V1 shape or the declarative V2 shape."""
     if isinstance(schema, dict) and schema.get("schema_version") == SCHEMA_V2_VERSION:
@@ -2877,23 +2915,67 @@ def _validate_capture_against_schema_v2(schema: dict[str, Any], packets: Iterabl
     checked = _validate_schema_v2(schema)
     applied = _apply_schema_v2(checked, packets, max_packets=max_packets)
     packet_diagnostics: list[dict[str, Any]] = []
+    unsupported_construct_count = 0
+    unsupported_packets = 0
+    resource_limit_packets = 0
+    resource_limit_reasons: set[str] = set()
     for packet in applied["values"]:
-        field_statuses = {field.get("status") for field in packet.get("fields", [])}
+        field_nodes = list(_v2_result_nodes(packet.get("fields", [])))
+        field_statuses = {field.get("status") for field in field_nodes}
+        diagnostic_codes = {
+            item.get("code")
+            for field in field_nodes
+            for item in field.get("diagnostics", [])
+            if isinstance(item, dict)
+        }
         relationship_results = packet.get("relationships", packet.get("checksum_diagnostics", []))
         relationship_statuses = {item.get("status") for item in relationship_results}
-        field_incomplete = field_statuses & {"UNKNOWN", "UNAVAILABLE", "OUT_OF_BOUNDS"}
-        field_violated = field_statuses & {"INVALID", "CYCLIC", "LIMIT_EXCEEDED"}
+        field_incomplete = field_statuses & {"UNKNOWN", "UNAVAILABLE", "OUT_OF_BOUNDS", "LIMIT_EXCEEDED"}
+        field_incomplete = field_incomplete or bool(diagnostic_codes & _V2_INCOMPLETE_DIAGNOSTIC_CODES)
+        field_resource_limited = bool(field_statuses & {"LIMIT_EXCEEDED"} or diagnostic_codes & _V2_RESOURCE_DIAGNOSTIC_CODES)
+        field_unsupported = bool(diagnostic_codes & _V2_UNSUPPORTED_DIAGNOSTIC_CODES)
+        field_unresolved = bool(diagnostic_codes & {"missing_reference", "dependency_status"})
+        field_violated = bool(field_statuses & {"INVALID", "CYCLIC"}) and not (field_unsupported or field_unresolved)
         relationship_invalid = "invalid" in relationship_statuses
         relationship_incomplete = relationship_statuses & {"insufficient", "unresolved", "unsupported"}
-        if field_violated or relationship_invalid:
-            status = "violated"
-        elif field_incomplete or relationship_incomplete:
+        relationship_unsupported = "unsupported" in relationship_statuses
+        if relationship_unsupported:
+            unsupported_construct_count += sum(
+                item.get("status") == "unsupported"
+                for item in relationship_results
+                if isinstance(item, dict)
+            )
+        if field_unsupported or relationship_unsupported:
+            unsupported_construct_count += sum(
+                1 for field in field_nodes
+                if set(item.get("code") for item in field.get("diagnostics", []) if isinstance(item, dict)) & _V2_UNSUPPORTED_DIAGNOSTIC_CODES
+            )
+        if field_resource_limited:
+            resource_limit_packets += 1
+            for code in diagnostic_codes & _V2_RESOURCE_DIAGNOSTIC_CODES:
+                resource_limit_reasons.add({
+                    "array_items": "array_expansion_limit",
+                    "array_items_total": "array_expansion_limit",
+                    "output_fields": "result_output_limit",
+                    "packet_count": "evaluation_packet_budget",
+                    "packet_budget": "schema_budget",
+                    "packet_bytes": "schema_budget",
+                    "field_length": "schema_budget",
+                    "nesting": "schema_budget",
+                }.get(code, "schema_budget"))
+        if field_incomplete or relationship_incomplete:
             # A missing byte, unavailable coordinate, or unresolved reviewed
             # range means validation could not be completed.  It is not a
             # checksum mismatch and must not be reported as invalid data.
             status = "incomplete"
+        elif field_unsupported:
+            status = "unsupported"
+        elif field_violated or relationship_invalid:
+            status = "violated"
         else:
             status = "ok"
+        if status == "unsupported":
+            unsupported_packets += 1
         packet_diagnostics.append({
             "packet_id": packet["packet_id"], "status": status,
             "schema_status": packet.get("status"),
@@ -2908,16 +2990,32 @@ def _validate_capture_against_schema_v2(schema: dict[str, Any], packets: Iterabl
             status = relationship.get("status")
             if status in relationship_counts:
                 relationship_counts[status] += 1
+    if applied.get("status") == "LIMIT_EXCEEDED":
+        resource_limit_reasons.add("evaluation_packet_budget")
+    if applied.get("schema_diagnostics"):
+        if any(item.get("status") == "LIMIT_EXCEEDED" for item in applied["schema_diagnostics"] if isinstance(item, dict)):
+            resource_limit_reasons.add("schema_budget")
+    incomplete_packets = sum(item["status"] == "incomplete" for item in packet_diagnostics)
+    invalid_packets = sum(item["status"] == "violated" for item in packet_diagnostics)
+    fully_validated_packets = sum(item["status"] in {"ok", "violated"} for item in packet_diagnostics)
+    completeness = "truncated" if resource_limit_reasons else "partial" if incomplete_packets or unsupported_packets else "complete"
     return {
         "schema_version": SCHEMA_V2_VERSION,
         "summary": {
             "packet_count": len(packet_diagnostics),
             "decoded_packets": sum(item["status"] == "ok" for item in packet_diagnostics),
-            "incomplete_packets": sum(item["status"] == "incomplete" for item in packet_diagnostics),
-            "invalid_packets": sum(item["status"] == "violated" for item in packet_diagnostics),
+            "fully_validated_packets": fully_validated_packets,
+            "incomplete_packets": incomplete_packets,
+            "invalid_packets": invalid_packets,
+            "unsupported_packets": unsupported_packets,
+            "unsupported_fields": unsupported_construct_count,
             "relationship_counts": relationship_counts,
             "schema_diagnostics": len(applied.get("schema_diagnostics", [])),
             "application_status": applied.get("status"),
+            "validation_completeness": completeness,
+            "resource_limit_termination_reason": sorted(resource_limit_reasons)[0] if resource_limit_reasons else None,
+            "resource_limit_reasons": sorted(resource_limit_reasons),
+            "resource_limit_packets": resource_limit_packets,
         },
         "packets": packet_diagnostics,
         "diagnostics": applied.get("diagnostics", []),

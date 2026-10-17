@@ -808,6 +808,9 @@ def _schema_evaluation_contract(
         truncation_reasons.append("evaluation_packet_budget")
     if application_status == "LIMIT_EXCEEDED":
         truncation_reasons.append("schema_budget")
+    for reason in summary.get("resource_limit_reasons", []) if isinstance(summary.get("resource_limit_reasons"), list) else []:
+        if isinstance(reason, str):
+            truncation_reasons.append(reason)
     capture_truncated = sum(
         1 for packet in packets
         if getattr(packet, "original_length", None) is not None
@@ -815,9 +818,17 @@ def _schema_evaluation_contract(
     )
     if capture_truncated:
         truncation_reasons.append("capture_record_truncation")
+    schema_diagnostics = report.get("schema_diagnostics") if isinstance(report.get("schema_diagnostics"), list) else []
+    schema_validation_failure = any(
+        isinstance(item, dict) and item.get("status") in {"INVALID", "CYCLIC"}
+        for item in schema_diagnostics
+    )
     truncation_reasons = sorted(set(truncation_reasons))
     incomplete_packets = int(summary.get("incomplete_packets", 0) or 0)
-    completeness_status = "truncated" if truncation_reasons else "partial" if incomplete_packets else "complete"
+    unsupported_packets = int(summary.get("unsupported_packets", 0) or 0)
+    fully_validated_packets = int(summary.get("fully_validated_packets", 0) or 0)
+    unsupported_construct_count = int(summary.get("unsupported_fields", 0) or 0)
+    completeness_status = "truncated" if truncation_reasons else "partial" if incomplete_packets or unsupported_packets or schema_validation_failure else "complete"
     warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
     return {
         "version": 1,
@@ -839,20 +850,29 @@ def _schema_evaluation_contract(
             "status": completeness_status,
             "input_packets": input_packets,
             "evaluated_packets": evaluated_packets,
+            "fully_validated_packets": fully_validated_packets,
             "incomplete_packets": incomplete_packets,
-            "schema_diagnostics": len(report.get("schema_diagnostics", []) if isinstance(report.get("schema_diagnostics"), list) else []),
+            "unsupported_packets": unsupported_packets,
+            "unsupported_construct_count": unsupported_construct_count,
+            "schema_diagnostics": len(schema_diagnostics),
+            "schema_validation_failure": schema_validation_failure,
+            "validation_completeness": completeness_status,
+            "resource_limit_termination_reason": summary.get("resource_limit_termination_reason"),
         },
         "warnings": warnings[:32],
         "limitations": [
             "Validation is packet-scoped; TCP stream reassembly is not performed.",
             "Unavailable or incomplete byte ranges are not treated as protocol violations.",
             "Evaluation is bounded by server and schema budgets.",
+            "Cancellation is not exposed by this synchronous HTTP endpoint.",
         ],
         "truncation": {
             "truncated": bool(truncation_reasons),
             "reasons": truncation_reasons,
             "input_packets": input_packets,
             "evaluated_packets": evaluated_packets,
+            "fully_validated_packets": fully_validated_packets,
+            "resource_limit_termination_reason": summary.get("resource_limit_termination_reason"),
             "capture_records": capture_truncated,
         },
     }

@@ -82,6 +82,7 @@ test("edits structured constraints and validates an independent capture", async 
   await expect(page.locator("#schema-validation-status")).toContainText("Validation complete");
   await expect(page.locator("#schema-validation-scope")).toContainText("Whole capture");
   await expect(page.locator("#schema-validation-summary")).toContainText("1/3 packet");
+  await expect(page.locator("#independent-schema-validation-report")).toContainText(/fully validated/i);
   await expect(page.locator("#independent-schema-validation-report")).toContainText("Packet 0");
   await expect(page.locator("#independent-schema-validation-report")).toContainText("Packet 1");
   await expect(page.locator("#independent-schema-validation-report")).toContainText("Packet 2");

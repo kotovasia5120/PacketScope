@@ -85,12 +85,12 @@ def experiment_multipart(
     return body, f"multipart/form-data; boundary={boundary}"
 
 
-def schema_validation_multipart(payload: bytes, schema: dict) -> tuple[bytes, str]:
+def schema_validation_multipart(payload: bytes, schema: dict, format_name: str = "bin") -> tuple[bytes, str]:
     boundary = "----PacketScopeSchema" + uuid.uuid4().hex
     body = (
         (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="sample.bin"\r\n'
          "Content-Type: application/octet-stream\r\n\r\n").encode() + payload +
-        (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="format"\r\n\r\nbin\r\n'
+         (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="format"\r\n\r\n{format_name}\r\n'
          f'--{boundary}\r\nContent-Disposition: form-data; name="schema"\r\n\r\n{json.dumps(schema)}\r\n').encode() +
         f'--{boundary}--\r\n'.encode()
     )
@@ -596,6 +596,90 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(contract["schema_identity"]["schema_version"], 2)
         self.assertIn("schema-v2.reusable_definitions", contract["supported_capabilities"])
         self.assertEqual(contract["completeness"]["evaluated_packets"], 1)
+
+    def test_schema_validation_contract_discloses_partial_and_truncated_results(self):
+        self.server.limits = Limits(max_input_bytes=4096)
+        self.server.analysis_manager.limits = self.server.limits
+
+        incomplete_schema = {
+            "schema_version": 2,
+            "fields": [{"id": "body", "type": "bytes", "offset": 0, "length": 2}],
+        }
+        body, content_type = schema_validation_multipart(b"x", incomplete_schema)
+        with self.request("/api/schema/validate", "POST", body, content_type) as response:
+            incomplete = json.load(response)
+        contract = incomplete["evaluation_contract"]
+        self.assertEqual(contract["completeness"]["status"], "partial")
+        self.assertEqual(contract["completeness"]["fully_validated_packets"], 0)
+        self.assertEqual(contract["completeness"]["incomplete_packets"], 1)
+        self.assertFalse(contract["truncation"]["truncated"])
+
+        limited_schema = {
+            "schema_version": 2,
+            "budgets": {"max_output_fields": 1},
+            "fields": [
+                {"id": "first", "type": "uint8", "offset": 0, "length": 1},
+                {"id": "second", "type": "uint8", "offset": 1, "length": 1},
+            ],
+        }
+        body, content_type = schema_validation_multipart(b"xy", limited_schema)
+        with self.request("/api/schema/validate", "POST", body, content_type) as response:
+            limited = json.load(response)
+        contract = limited["evaluation_contract"]
+        self.assertEqual(contract["completeness"]["status"], "truncated")
+        self.assertEqual(contract["completeness"]["resource_limit_termination_reason"], "result_output_limit")
+        self.assertIn("result_output_limit", contract["truncation"]["reasons"])
+
+        unsupported_schema = {
+            "schema_version": 2,
+            "fields": [{"id": "vendor", "type": "vendor-specific", "offset": 0, "length": 1}],
+        }
+        body, content_type = schema_validation_multipart(b"x", unsupported_schema)
+        with self.request("/api/schema/validate", "POST", body, content_type) as response:
+            unsupported = json.load(response)
+        contract = unsupported["evaluation_contract"]
+        self.assertEqual(contract["completeness"]["status"], "partial")
+        self.assertEqual(contract["completeness"]["unsupported_construct_count"], 1)
+        self.assertEqual(unsupported["packets"][0]["status"], "unsupported")
+
+    def test_schema_validation_contract_reports_packet_budget_truncation(self):
+        self.server.limits = Limits(max_input_bytes=4096)
+        self.server.analysis_manager.limits = self.server.limits
+        schema = {
+            "schema_version": 2,
+            "budgets": {"max_packets": 1},
+            "fields": [{"id": "value", "type": "uint8", "offset": 0, "length": 1}],
+        }
+        capture = (
+            b'{"index":0,"timestamp":0,"direction":"rx","source":"fixture","raw":"AQ=="}\n'
+            b'{"index":1,"timestamp":1,"direction":"rx","source":"fixture","raw":"Ag=="}\n'
+        )
+        body, content_type = schema_validation_multipart(capture, schema, "jsonl")
+        with self.request("/api/schema/validate", "POST", body, content_type) as response:
+            report = json.load(response)
+        contract = report["evaluation_contract"]
+        self.assertEqual(contract["capture_identity"]["packet_count"], 2)
+        self.assertEqual(contract["completeness"]["evaluated_packets"], 1)
+        self.assertEqual(contract["truncation"]["resource_limit_termination_reason"], "evaluation_packet_budget")
+        self.assertIn("evaluation_packet_budget", contract["truncation"]["reasons"])
+
+    def test_schema_validation_rejects_invalid_schema_without_claiming_evaluation(self):
+        self.server.limits = Limits(max_input_bytes=4096)
+        self.server.analysis_manager.limits = self.server.limits
+        schema = {
+            "schema_version": 2,
+            "fields": [
+                {"id": "duplicate", "type": "uint8", "offset": 0, "length": 1},
+                {"id": "duplicate", "type": "uint8", "offset": 1, "length": 1},
+            ],
+        }
+        body, content_type = schema_validation_multipart(b"xy", schema)
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.request("/api/schema/validate", "POST", body, content_type)
+        self.assertEqual(context.exception.code, 400)
+        error = context.exception.read()
+        self.assertIn(b"invalid schema or capture", error)
+        self.assertNotIn(b"evaluation_contract", error)
 
     def test_reviewed_schema_exports_are_reported_without_execution(self):
         schema = {"schema_version": 1, "name": "Demo", "fields": [{"name": "header", "type": "custom", "offset": 0, "width": 1, "endian": "unknown", "coordinate_system": "raw_packet"}]}
