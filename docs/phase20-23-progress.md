@@ -63,6 +63,10 @@ Current milestone: **Milestone A — PARTIAL**
 
 - COMPLETE: current exporters remain bounded and warn about omitted dynamic or
   nested constructs.
+- COMPLETE: `docs/interop-capability-matrix.md` documents SUPPORTED,
+  PARTIALLY_SUPPORTED, and UNSUPPORTED semantics for integer types,
+  endianness, enums, masks, arrays, nesting, dependencies, relationships,
+  payload coordinates, and variable-size fields.
 - NOT_STARTED: full semantic nested/dynamic Kaitai and Wireshark Lua generation
   and external-tool execution.
 
@@ -148,6 +152,7 @@ The new workbench E2E is in `e2e/schema-v2-usability.spec.js`.
 - `837ae76 docs: checkpoint phase 20 workbench`
 - `9432d87 feat: expose authoritative schema evaluation contract`
 - `920aa91 feat: add reproducible schema performance corpus`
+- pending `docs/interop-capability-matrix.md` capability matrix checkpoint
 - A docs-only checkpoint commit is pending after this file is updated.
 
 ## Known regressions / gaps
