@@ -17,8 +17,8 @@ Status meanings:
 | --- | --- | --- | --- |
 | Signed/unsigned 8/16/32/64-bit integers | PARTIALLY_SUPPORTED | PARTIALLY_SUPPORTED | Static widths and selected endianness map to target integer types; unsupported width/type combinations warn. |
 | Endianness | PARTIALLY_SUPPORTED | PARTIALLY_SUPPORTED | Kaitai emits `u*le`/`s*le`; Lua uses `add_le` for supported numeric fields. Other fields remain explicit warnings. |
-| Enumerations | UNSUPPORTED | UNSUPPORTED | Constraint metadata is not silently converted into target enum declarations. |
-| Named bit masks / flags | UNSUPPORTED | UNSUPPORTED | The static range may be omitted or emitted as bytes with a warning; flag meaning is not claimed. |
+| Enumerations | PARTIALLY_SUPPORTED | PARTIALLY_SUPPORTED | Reviewed integer values with reviewed names are emitted as Kaitai enum tables and Wireshark value tables; unnamed or non-integer enum metadata remains warned and omitted. |
+| Named bit masks / flags | UNSUPPORTED | PARTIALLY_SUPPORTED | Wireshark emits bounded one-byte numeric flag fields with named masks. Kaitai has no equivalent field-level mask declaration in the generated flat form and warns/omits the flags. |
 | Flat static fields | SUPPORTED | SUPPORTED | Raw-packet coordinates, non-overlapping positive static ranges are emitted with bounds checks. |
 | Application-payload coordinates | UNSUPPORTED | UNSUPPORTED | A transport payload dissector is required; the field is warned and omitted. |
 | Nested structures | UNSUPPORTED | UNSUPPORTED | No flattening is performed because it can change scoped offsets and identity. |
@@ -35,8 +35,9 @@ Status meanings:
 ## Validation policy
 
 The exporter unit tests verify deterministic syntax fragments, bounds checks,
-endianness handling, and warnings for unsupported constructs. External Kaitai
-or Wireshark execution is optional and is not reported as passed when the
-tooling is unavailable. A future exporter extension must add synthetic
-fixtures, syntax validation, and semantic comparison against authoritative
-PacketScope results before changing an entry to **SUPPORTED**.
+endianness handling, named enum/value-table generation, named Wireshark masks,
+and warnings for unsupported constructs. External Kaitai or Wireshark
+execution is optional and is not reported as passed when the tooling is
+unavailable. A future exporter extension must add synthetic fixtures, syntax
+validation, and semantic comparison against authoritative PacketScope results
+before changing an entry to **SUPPORTED**.

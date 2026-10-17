@@ -692,6 +692,22 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertIn("type: bytes", kaitai["content"])
         self.assertIn("buffer:len()", lua["content"])
 
+        named_schema = {
+            "schema_version": 2,
+            "name": "Named protocol",
+            "fields": [{
+                "id": "kind", "name": "Kind", "type": "uint8", "offset": 0, "length": 1,
+                "constraints": {"enum": {"values": [0, 1], "names": {"0": "idle", "1": "running"}}},
+            }],
+        }
+        named_body = json.dumps({"schema": named_schema}).encode()
+        with self.request("/api/schema/export/kaitai", "POST", named_body, "application/json") as response:
+            named_kaitai = json.load(response)
+        with self.request("/api/schema/export/wireshark", "POST", named_body, "application/json") as response:
+            named_lua = json.load(response)
+        self.assertIn("enum: kind_enum", named_kaitai["content"])
+        self.assertIn("kind_enum", named_lua["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

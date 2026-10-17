@@ -9,8 +9,10 @@ from packetscope.schema import validate_schema
 def export_kaitai(schema: dict) -> dict:
     checked = validate_schema(schema)
     warnings: list[str] = []
-    lines = ["meta:", f"  id: {safe_identifier(checked.get('name', 'packetscope_protocol'))}", "  endian: be", "seq:"]
+    lines = ["meta:", f"  id: {safe_identifier(checked.get('name', 'packetscope_protocol'))}", "  endian: be"]
     cursor = 0
+    enum_definitions: list[tuple[str, list[tuple[int, str]]]] = []
+    enum_ids: set[str] = set()
     export_fields = _representable_fields(checked, warnings)
     for index, field in enumerate(sorted(export_fields, key=lambda item: (item["offset"], item["name"]))):
         offset, width = field["offset"], field["width"]
@@ -27,7 +29,30 @@ def export_kaitai(schema: dict) -> dict:
         lines.extend([f"  - id: {identifier}", f"    type: {type_name}"])
         if type_name == "bytes":
             lines.append(f"    size: {width}")
+        else:
+            enum_entries = _named_enum_entries(field, warnings)
+            if enum_entries:
+                enum_id = f"{identifier}_enum"
+                suffix = 2
+                while enum_id in enum_ids:
+                    enum_id = f"{identifier}_enum_{suffix}"
+                    suffix += 1
+                enum_ids.add(enum_id)
+                enum_definitions.append((enum_id, enum_entries))
+                lines.append(f"    enum: {enum_id}")
+        if _named_flag_entries(field, warnings):
+            warnings.append(f"field {field['name']} named bit masks are not representable in Kaitai Struct and were not emitted")
         cursor = offset + width
+    field_lines = lines[3:]
+    lines = lines[:3]
+    if enum_definitions:
+        enum_lines = ["enums:"]
+        for enum_id, entries in enum_definitions:
+            enum_lines.append(f"  {enum_id}:")
+            enum_lines.extend(f"    {value}: {label}" for value, label in entries)
+        lines.extend(enum_lines)
+    lines.append("seq:")
+    lines.extend(field_lines)
     return {"format": "kaitai", "content": "\n".join(lines) + "\n", "warnings": sorted(set(warnings))}
 
 
@@ -41,6 +66,7 @@ def export_wireshark_lua(schema: dict) -> dict:
         f"local fields = {{}}",
     ]
     emitted: list[tuple[str, dict]] = []
+    emitted_flags: list[tuple[str, dict, int]] = []
     export_fields = _representable_fields(checked, warnings)
     for index, field in enumerate(sorted(export_fields, key=lambda item: (item["offset"], item["name"]))):
         identifier = safe_identifier(field["name"], fallback=f"field_{index}")
@@ -51,14 +77,39 @@ def export_wireshark_lua(schema: dict) -> dict:
             warnings.append(f"field {field['name']} has an unsupported range")
             continue
         lua_type = _lua_type(field, warnings)
-        lines.append(f"fields.{identifier} = ProtoField.{lua_type}('{protocol}.{identifier}', '{field['name']}')")
+        enum_entries = _named_enum_entries(field, warnings)
+        enum_table = None
+        if enum_entries:
+            enum_table = f"{identifier}_enum"
+            rendered = ", ".join(f"[{value}] = {_lua_quote(label)}" for value, label in enum_entries)
+            lines.append(f"local {enum_table} = {{ {rendered} }}")
+        if enum_table is not None and _is_numeric_field(field):
+            lines.append(f"fields.{identifier} = ProtoField.{lua_type}('{protocol}.{identifier}', {_lua_quote(field['name'])}, base.DEC, {enum_table})")
+        else:
+            lines.append(f"fields.{identifier} = ProtoField.{lua_type}('{protocol}.{identifier}', {_lua_quote(field['name'])})")
         emitted.append((identifier, field))
+        flag_entries = _named_flag_entries(field, warnings)
+        if flag_entries:
+            if field["width"] != 1 or not _is_numeric_field(field):
+                warnings.append(f"field {field['name']} named bit masks require a one-byte numeric field and were not emitted")
+            else:
+                for flag_name, mask in flag_entries:
+                    flag_identifier = f"{identifier}_{safe_identifier(flag_name)}"
+                    flag_label = f"{field['name']}.{flag_name}"
+                    lines.append(
+                        f"fields.{flag_identifier} = ProtoField.bool('{protocol}.{flag_identifier}', "
+                        f"{_lua_quote(flag_label)}, 8, nil, {mask})"
+                    )
+                    emitted_flags.append((flag_identifier, field, mask))
     lines.append(f"{protocol}.fields = fields")
     lines.extend([f"function {protocol}.dissector(buffer, pinfo, tree)", f"  local subtree = tree:add({protocol}, buffer())"])
     for identifier, field in emitted:
         offset, width = field["offset"], field["width"]
         add_method = "add_le" if field.get("endian") == "little" and _is_numeric_field(field) else "add"
         lines.extend([f"  if buffer:len() >= {offset + width} then", f"    subtree:{add_method}(fields.{identifier}, buffer({offset}, {width}))", "  end"])
+    for flag_identifier, field, _mask in emitted_flags:
+        offset, width = field["offset"], field["width"]
+        lines.extend([f"  if buffer:len() >= {offset + width} then", f"    subtree:add(fields.{flag_identifier}, buffer({offset}, {width}))", "  end"])
     lines.extend(["end", f"return {protocol}"])
     return {"format": "wireshark-lua", "content": "\n".join(lines) + "\n", "warnings": sorted(set(warnings))}
 
@@ -104,6 +155,68 @@ def safe_identifier(value: object, *, fallback: str = "field") -> str:
     if result[0].isdigit():
         result = f"_{result}"
     return result[:80]
+
+
+def _lua_quote(value: object) -> str:
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'"
+
+
+def _named_enum_entries(field: dict, warnings: list[str]) -> list[tuple[int, str]]:
+    constraints = field.get("constraints")
+    if not isinstance(constraints, dict) or "enum" not in constraints:
+        return []
+    raw = constraints.get("enum")
+    names = constraints.get("enum_names")
+    values = raw
+    if isinstance(raw, dict):
+        if "values" in raw or "allowed" in raw:
+            values = raw.get("values", raw.get("allowed"))
+            names = raw.get("names", names)
+        else:
+            pairs = raw.items()
+            values = [key for key, _label in pairs]
+            names = {str(key): label for key, label in raw.items()}
+    if not isinstance(values, list) or not isinstance(names, dict):
+        warnings.append(f"field {field['name']} enum values have no reviewed names and were not emitted")
+        return []
+    entries: list[tuple[int, str]] = []
+    for raw_value in values:
+        if isinstance(raw_value, bool):
+            continue
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        label = names.get(str(raw_value), names.get(str(value)))
+        if not isinstance(label, str) or not label.strip():
+            continue
+        entries.append((value, safe_identifier(label, fallback=f"value_{value}")))
+    if not entries:
+        warnings.append(f"field {field['name']} enum values have no representable reviewed names and were not emitted")
+    return sorted(set(entries), key=lambda item: item[0])
+
+
+def _named_flag_entries(field: dict, warnings: list[str]) -> list[tuple[str, int]]:
+    constraints = field.get("constraints")
+    flags = constraints.get("flags") if isinstance(constraints, dict) else None
+    if flags is None:
+        return []
+    if not isinstance(flags, dict):
+        warnings.append(f"field {field['name']} named flags are malformed and were not emitted")
+        return []
+    entries: list[tuple[str, int]] = []
+    for raw_name, raw_mask in flags.items():
+        if isinstance(raw_mask, bool):
+            continue
+        try:
+            mask = int(raw_mask)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(raw_name, str) and raw_name.strip() and mask > 0:
+            entries.append((raw_name.strip(), mask))
+    if len(entries) != len(flags):
+        warnings.append(f"field {field['name']} has invalid named flags that were not emitted")
+    return sorted(entries, key=lambda item: (item[1], item[0]))
 
 
 def _kaitai_type(field: dict, warnings: list[str]) -> str:

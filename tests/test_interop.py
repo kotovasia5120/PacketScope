@@ -48,6 +48,35 @@ class InteroperabilityExportTests(unittest.TestCase):
         self.assertTrue(any("nested/array" in warning for warning in lua["warnings"]))
         self.assertTrue(any("checksum relationship" in warning for warning in kaitai["warnings"]))
 
+    def test_named_enums_and_flags_are_emitted_for_representable_targets(self):
+        schema = {
+            "schema_version": 2,
+            "name": "Named protocol",
+            "coordinate_system": "raw_packet",
+            "fields": [
+                {
+                    "id": "kind", "name": "Kind", "type": "uint8", "offset": 0, "length": 1,
+                    "constraints": {"enum": {"values": [0, 1], "names": {"0": "idle", "1": "running"}}},
+                },
+                {
+                    "id": "flags", "name": "Flags", "type": "uint8", "offset": 1, "length": 1,
+                    "constraints": {"flags": {"read": 1, "write": 2}},
+                },
+            ],
+        }
+        kaitai = export_kaitai(schema)
+        self.assertIn("enums:", kaitai["content"])
+        self.assertIn("enum: kind_enum", kaitai["content"])
+        self.assertIn("0: idle", kaitai["content"])
+        self.assertTrue(any("named bit masks" in warning for warning in kaitai["warnings"]))
+
+        lua = export_wireshark_lua(schema)
+        self.assertIn("local kind_enum =", lua["content"])
+        self.assertIn("[1] = 'running'", lua["content"])
+        self.assertIn("fields.flags_read = ProtoField.bool", lua["content"])
+        self.assertIn("fields.flags_write = ProtoField.bool", lua["content"])
+        self.assertNotIn("constraints/enumerations are not represented", lua["warnings"])
+
 
 if __name__ == "__main__":
     unittest.main()
