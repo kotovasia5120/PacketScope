@@ -2,7 +2,7 @@
 
 Starting HEAD: `f14e4f1`
 
-Current HEAD: `9432d87`
+Current HEAD: `920aa91`
 
 Current milestone: **Milestone A — PARTIAL**
 
@@ -66,10 +66,25 @@ Current milestone: **Milestone A — PARTIAL**
 - NOT_STARTED: full semantic nested/dynamic Kaitai and Wireshark Lua generation
   and external-tool execution.
 
-### Milestone D — Performance and reliability: NOT_STARTED
+### Milestone D — Performance and reliability: PARTIAL
 
-- NOT_STARTED: dedicated Schema V2 100/1,000/10,000/100,000 packet corpus and
-  machine-readable wall/CPU/memory/browser baselines.
+- COMPLETE: `scripts/benchmark_schema_v2.py` generates independent deterministic
+  synthetic flat, nested-record, large-array, dependency, checksum, TCP
+  reconstruction, and controlled-experiment workloads. `make benchmark` writes
+  `benchmarks/schema-v2-results.json`.
+- COMPLETE: machine-readable measurements record wall time, CPU time,
+  tracemalloc peak allocation, throughput, serialized output size, environment,
+  pinned Python version, warmup/repeat configuration, and explicit workload
+  caps.
+- BASELINE (one cold repeat, CPython 3.12.7, 12 CPUs, WSL2 x86_64): flat Schema
+  V2 throughput was 761 packets/s at 100 packets, 771 packets/s at 1,000,
+  789 packets/s at 10,000, and 747 packets/s at 100,000. The 100,000 run took
+  133.846 s wall time, used 462,389,190 tracemalloc bytes, and serialized
+  121,967,070 result bytes.
+- BASELINE (explicit caps recorded in the JSON): nested records 217 packets/s
+  at 2,000 evaluated packets, large arrays 43.5 packets/s at 1,000, complex
+  dependencies 457.3 packets/s at 2,000, and checksum relationships 769.4
+  packets/s at 2,000. No optimization is claimed yet; these are baselines.
 - COMPLETE: existing schema and capture budgets continue to bound field,
   nesting, array, packet, output, and response work.
 
@@ -132,6 +147,7 @@ The new workbench E2E is in `e2e/schema-v2-usability.spec.js`.
 - `6e5f81d feat: add hierarchical schema workbench`
 - `837ae76 docs: checkpoint phase 20 workbench`
 - `9432d87 feat: expose authoritative schema evaluation contract`
+- `920aa91 feat: add reproducible schema performance corpus`
 - A docs-only checkpoint commit is pending after this file is updated.
 
 ## Known regressions / gaps
@@ -144,6 +160,7 @@ The new workbench E2E is in `e2e/schema-v2-usability.spec.js`.
 
 ## Exact next implementation action
 
-Run the full required check matrix after the contract checkpoint, then build the
-deterministic Schema V2 performance corpus and record cold/warm baselines before
-optimizing any measured bottleneck.
+Run `make benchmark` with the pinned interpreter to refresh the corpus after
+material code changes; then profile the largest measured allocation before
+optimizing any bottleneck. Do not compare results from different Python
+versions or workload caps without recording both configurations.
