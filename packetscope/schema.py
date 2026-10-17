@@ -1987,6 +1987,23 @@ def _v2_parse_field(field: dict[str, Any], *, base_offset: int, data: bytes | No
     return output, result
 
 
+def _v2_materialize_fast_array_element(
+    element: dict[str, Any], item_id: str, field: dict[str, Any],
+    values: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Create one static array instance without recursively deep-copying it."""
+    item_field = dict(element)
+    item_field["id"] = item_id
+    item_field["path"] = item_id
+    item_field["_source_local_id"] = element.get("_source_local_id", element.get("id", item_id))
+    item_field["provenance"] = _v2_field_provenance(element, item_id, None, None)
+    item_field["_array_visible_refs"] = {
+        **field.get("_array_visible_refs", {}),
+        **{key: key for key in values},
+    }
+    return item_field
+
+
 def _v2_parse_array(field: dict[str, Any], array: dict[str, Any], absolute_offset: int, data: bytes, metadata: dict[str, Any], values: dict[str, dict[str, Any]], checked: dict[str, Any], depth: int) -> tuple[dict[str, Any], dict[str, Any]]:
     budgets = checked["budgets"]
     declared_length = None
@@ -2030,14 +2047,18 @@ def _v2_parse_array(field: dict[str, Any], array: dict[str, Any], absolute_offse
     items: list[dict[str, Any]] = []
     public_values: list[Any] = []
     cursor, status = absolute_offset, "RESOLVED"
+    fast_element = checked.get("_prepared_array_elements", {}).get(field["id"])
     for index in range(count):
         item_id = f"{field['id']}[{index}]"
-        item_fields = _v2_expand_fields(
-            [element], checked.get("definitions", {}), prefix=item_id,
-            root_ids=[item_id], visible_refs={**field.get("_array_visible_refs", {}), **{key: key for key in values}},
-            depth=depth + 1, max_nesting=budgets["max_nesting"],
-        )
-        item_field = item_fields[0] if item_fields else element
+        if fast_element is not None:
+            item_field = _v2_materialize_fast_array_element(fast_element, item_id, field, values)
+        else:
+            item_fields = _v2_expand_fields(
+                [element], checked.get("definitions", {}), prefix=item_id,
+                root_ids=[item_id], visible_refs={**field.get("_array_visible_refs", {}), **{key: key for key in values}},
+                depth=depth + 1, max_nesting=budgets["max_nesting"],
+            )
+            item_field = item_fields[0] if item_fields else element
         item_output, item_result = _v2_parse_field(item_field, base_offset=cursor, data=data, metadata=metadata, values=values, checked=checked, depth=depth + 1, store=False)
         item_output["index"] = index
         items.append(item_output)
@@ -2616,25 +2637,50 @@ def _v2_apply_checksum_relationship(
     }
 
 
-def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
-    checked["_runtime"] = {"array_items": 0, "output_fields": 0}
-    checked["_runtime_diagnostics"] = []
-    values: dict[str, dict[str, Any]] = {}
-    records: dict[str, dict[str, Any]] = {}
-    field_outputs: dict[str, dict[str, Any]] = {}
+def _v2_can_fast_expand_array_element(element: dict[str, Any]) -> bool:
+    """Whether an array element can be instance-scoped without deep copying.
+
+    A fast element still receives fresh identity/provenance dictionaries below.
+    Nested definitions, child trees, nested arrays, and scoped references keep
+    the general expansion path because those constructs need reference-aware
+    rewriting for every instance.
+    """
+    if element.get("definition") is not None:
+        return False
+    if isinstance(element.get("fields"), list) or isinstance(element.get("array"), dict):
+        return False
+    references: set[str] = set()
+    for expression in _v2_direct_field_expressions(element):
+        _v2_expression_refs(expression, references)
+    return not references
+
+
+def _v2_prepare_evaluation(checked: dict[str, Any]) -> dict[str, Any]:
+    """Build reusable, packet-independent Schema V2 evaluation metadata.
+
+    The normalized schema is immutable for the duration of an application.
+    Only the metadata needed to interpret it is retained here; decoded values,
+    resource counters, and runtime diagnostics are created afresh for each
+    packet.  This keeps preparation out of the hot packet loop without
+    allowing one packet's state to leak into another.
+    """
     runtime_fields = _v2_expand_fields(
         checked["fields"], checked["definitions"],
         max_nesting=checked["budgets"]["max_nesting"],
     )
     field_map = {field["id"]: field for field in _v2_walk_fields(runtime_fields)}
-    checked["_runtime_field_ids"] = set(field_map)
     refs_by_id, graph_diagnostics = _v2_schema_graph(runtime_fields, {})
-    cyclic = {item["field_id"] for item in graph_diagnostics if item.get("code") == "dependency_cycle"}
-    missing = {(item.get("field_id"), item.get("reference")) for item in graph_diagnostics if item.get("code") == "missing_reference"}
-    checked["_runtime_cyclic_fields"] = cyclic
-    checked["_runtime_missing_references"] = {}
-    for field_id, reference in missing:
-        checked["_runtime_missing_references"].setdefault(field_id, set()).add(reference)
+    cyclic = frozenset(
+        item["field_id"] for item in graph_diagnostics
+        if item.get("code") == "dependency_cycle"
+    )
+    missing: dict[str, set[str]] = {}
+    for item in graph_diagnostics:
+        if item.get("code") != "missing_reference":
+            continue
+        field_id, reference = item.get("field_id"), item.get("reference")
+        if isinstance(field_id, str) and isinstance(reference, str):
+            missing.setdefault(field_id, set()).add(reference)
 
     root_by_id: dict[str, str] = {}
     for root in runtime_fields:
@@ -2650,9 +2696,9 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
             dependency_owner = root_by_id.get(dependency)
             if dependency_owner is not None and dependency_owner != owner:
                 root_dependencies[owner].add(dependency_owner)
-    # Array element declarations are instantiated later, so they are not in
-    # the ordinary runtime field graph yet.  Their references can still make
-    # the containing root field depend on a later sibling.
+
+    # Array element declarations are instantiated later, so inspect their
+    # references while preparing the containing root's dependency order.
     root_reference_map: dict[str, str] = {}
     for root in runtime_fields:
         root_reference_map[root["id"]] = root["id"]
@@ -2664,23 +2710,69 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
         for declared in _v2_walk_declared_fields([root]):
             if declared is root:
                 continue
-            owner = root["id"]
             references: set[str] = set()
             for expression in _v2_direct_field_expressions(declared):
                 _v2_expression_refs(expression, references)
             for reference in references:
                 dependency_owner = root_reference_map.get(reference)
-                if dependency_owner is not None and dependency_owner != owner:
-                    root_dependencies[owner].add(dependency_owner)
-    root_order = _v2_order_scope_fields(runtime_fields, root_dependencies)
+                if dependency_owner is not None and dependency_owner != root["id"]:
+                    root_dependencies[root["id"]].add(dependency_owner)
+
+    relationship_checked = {"fields": runtime_fields, "relationships": checked.get("relationships", [])}
+    array_item_templates: dict[str, dict[str, Any]] = {}
+    for field in _v2_walk_declared_fields(runtime_fields):
+        array = field.get("array")
+        element = array.get("element") if isinstance(array, dict) else None
+        if isinstance(element, dict) and _v2_can_fast_expand_array_element(element):
+            array_item_templates[field["id"]] = element
+    return {
+        "runtime_fields": tuple(runtime_fields),
+        "field_map": field_map,
+        "refs_by_id": refs_by_id,
+        "graph_diagnostics": tuple(graph_diagnostics),
+        "cyclic": cyclic,
+        "missing": {field_id: frozenset(references) for field_id, references in missing.items()},
+        "root_order": tuple(_v2_order_scope_fields(runtime_fields, root_dependencies)),
+        "relationship_descriptors": tuple(_v2_relationship_descriptors(relationship_checked)),
+        "array_item_templates": array_item_templates,
+    }
+
+
+def _v2_apply_packet(
+    checked: dict[str, Any], packet: Packet, *, prepared: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    prepared = prepared or _v2_prepare_evaluation(checked)
+    # ``checked`` contains immutable normalized metadata.  Copy only the
+    # outer mapping and allocate all mutable runtime state per packet.
+    checked = {
+        **checked,
+        "_runtime": {"array_items": 0, "output_fields": 0},
+        "_runtime_diagnostics": [],
+        "_runtime_field_ids": frozenset(prepared["field_map"]),
+        "_runtime_cyclic_fields": set(prepared["cyclic"]),
+        "_runtime_missing_references": {
+            field_id: set(references)
+            for field_id, references in prepared["missing"].items()
+        },
+        "_prepared_array_elements": prepared["array_item_templates"],
+    }
+    values: dict[str, dict[str, Any]] = {}
+    records: dict[str, dict[str, Any]] = {}
+    field_outputs: dict[str, dict[str, Any]] = {}
+    runtime_fields = prepared["runtime_fields"]
+    field_map = prepared["field_map"]
+    graph_diagnostics = prepared["graph_diagnostics"]
+    cyclic = prepared["cyclic"]
+    missing = prepared["missing"]
+    root_order = prepared["root_order"]
     for field in root_order:
         field_id = field["id"]
         field = field_map[field_id]
         if field_id in cyclic:
             result = _v2_status_result("CYCLIC", diagnostics=[_v2_diag("CYCLIC", "dependency_cycle", "field dependency cycle prevents evaluation")])
             output = _v2_public_field(field, result, present=False)
-        elif any(item[0] == field_id for item in missing):
-            refs = sorted(item[1] for item in missing if item[0] == field_id)
+        elif field_id in missing:
+            refs = sorted(missing[field_id])
             result = _v2_status_result("INVALID", diagnostics=[_v2_diag("INVALID", "missing_reference", f"field reference {reference!r} does not exist", reference=reference) for reference in refs])
             output = _v2_public_field(field, result)
         else:
@@ -2696,8 +2788,7 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
     diagnostics.extend(item for item in checked.get("_runtime_diagnostics", []) if item not in diagnostics)
     coordinate_cache: dict[str, tuple[bytes | None, dict[str, Any]]] = {}
     relationship_results: list[dict[str, Any]] = []
-    relationship_checked = {**checked, "fields": runtime_fields}
-    for relationship_id, owner_id, descriptor in _v2_relationship_descriptors(relationship_checked):
+    for relationship_id, owner_id, descriptor in prepared["relationship_descriptors"]:
         relationship_kind = str(descriptor.get("kind", "checksum")).lower()
         if relationship_kind in {"length", "length_relationship", "size"}:
             if owner_id is not None and not any(key in descriptor for key in ("field_id", "length_field_id", "length_field", "source_field_id", "source", "field")):
@@ -2741,6 +2832,7 @@ def _v2_apply_packet(checked: dict[str, Any], packet: Packet) -> dict[str, Any]:
 
 def _apply_schema_v2(schema: dict[str, Any], packets: Iterable[Packet], max_packets: int = 100_000) -> dict[str, Any]:
     checked = _validate_schema_v2(schema)
+    prepared = _v2_prepare_evaluation(checked)
     if isinstance(max_packets, bool) or not isinstance(max_packets, int) or max_packets <= 0:
         raise ValueError("packet count exceeds schema application limit")
     packet_limit = min(max_packets, checked["budgets"]["max_packets"])
@@ -2752,7 +2844,7 @@ def _apply_schema_v2(schema: dict[str, Any], packets: Iterable[Packet], max_pack
         if len(values) >= packet_limit:
             truncated_input = True
             break
-        values.append(_v2_apply_packet(checked, packet))
+        values.append(_v2_apply_packet(checked, packet, prepared=prepared))
     diagnostics: list[dict[str, Any]] = []
     if truncated_input:
         diagnostics.append(_v2_diag("LIMIT_EXCEEDED", "packet_count", "packet input exceeded the application budget", limit=packet_limit))

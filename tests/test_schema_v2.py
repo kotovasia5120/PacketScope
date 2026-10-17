@@ -113,6 +113,28 @@ class SchemaV2Tests(unittest.TestCase):
         self.assertEqual(first["fields"][1]["fields"][0]["id"], "record.body.value")
         self.assertEqual(first["fields"][1]["fields"][0]["provenance"]["definition"], "inner")
 
+    def test_prepared_evaluation_keeps_packet_runtime_state_isolated(self):
+        schema = validate_schema({
+            "schema_version": 2,
+            "budgets": {"max_total_array_items": 2},
+            "fields": [{
+                "id": "items", "type": "array", "offset": 0,
+                "array": {"count": 2, "element": {"id": "item", "type": "uint8", "length": 1}},
+            }],
+        })
+        before = json.dumps(schema, sort_keys=True)
+        report = apply_schema(schema, [Packet(0, b"ab"), Packet(1, b"cd")])
+        self.assertEqual([packet["status"] for packet in report["values"]], ["RESOLVED", "RESOLVED"])
+        self.assertEqual(
+            [item["value"] for item in report["values"][0]["fields"][0]["items"]],
+            [97, 98],
+        )
+        self.assertEqual(
+            [item["value"] for item in report["values"][1]["fields"][0]["items"]],
+            [99, 100],
+        )
+        self.assertEqual(json.dumps(schema, sort_keys=True), before)
+
     def test_later_sibling_dependency_is_resolved_in_source_scope(self):
         schema = validate_schema({
             "schema_version": 2,
