@@ -2,9 +2,9 @@
 
 Starting HEAD: `118a07a`
 
-Current HEAD: `2159d74`
+Current HEAD: `a1a6b87`
 
-Current milestone: **Milestone A — COMPLETE; Milestone B NOT_STARTED**
+Current milestone: **Milestone C — PARTIAL; Milestone D NOT_STARTED**
 
 ## Status
 
@@ -20,9 +20,14 @@ Current milestone: **Milestone A — COMPLETE; Milestone B NOT_STARTED**
   relationship descriptors, and safe static array element materialization.
 - COMPLETE: packet runtime counters, decoded values, mutable diagnostics, and
   reference state remain isolated per packet.
-- NOT_STARTED: authoritative partial/truncation contract expansion.
-- PARTIAL: Kaitai and Wireshark exporters remain flat-static only; external
-  semantic execution is UNVERIFIED.
+- COMPLETE: authoritative reports now distinguish complete, partial, truncated,
+  unsupported, schema-failure, resource-limit, and packet-constraint states.
+- COMPLETE: Python, HTTP, and browser coverage includes incomplete fields,
+  missing dependencies, result/output limits, unsupported field types, invalid
+  schemas, and packet-budget truncation.
+- PARTIAL: Kaitai and Wireshark exporters remain flat-static only; named integer
+  enums are emitted when reviewed names are present, and Wireshark emits
+  bounded one-byte named masks. External semantic execution is UNVERIFIED.
 - PARTIAL: the realistic request/response demonstration is not consolidated.
 - BLOCKED: Docker verification is unavailable unless an authorized Docker host
   becomes accessible.
@@ -91,10 +96,45 @@ per-packet state isolation.
 - `make benchmark`: PASS — 84 measurements, one warmup, three measured repeats.
 - Peak memory numbers remain tracemalloc allocation measurements, not RSS.
 
+## Milestone B correctness evidence
+
+The authoritative Python report now exposes `fully_validated_packets`,
+`incomplete_packets`, `unsupported_packets`, `unsupported_fields`,
+`validation_completeness`, `resource_limit_termination_reason`, and bounded
+resource-limit reason lists. A constraint violation remains a fully evaluated
+packet; truncation, unavailable bytes, unresolved dependencies, unsupported
+constructs, and schema failures cannot become unconditional success.
+
+The HTTP `evaluation_contract` now includes the same counts plus evaluator and
+schema/capture identities, explicit schema-failure metadata, warnings,
+limitations, and truncation reasons. The synchronous validation endpoint
+discloses that cancellation is not supported rather than claiming it.
+
+- `make test`: PASS — 161 Python tests.
+- `node --check packetscope/static/app.js`: PASS.
+- `node --check packetscope/static/schema-values.js`: PASS.
+- `node --test tests/test_schema_values.js`: PASS — 10 JavaScript tests.
+- Focused Chromium Schema V2/validation tests: PASS — 2 tests, including the
+  authoritative completeness text in the browser report.
+
+## Milestone C interoperability evidence
+
+- COMPLETE for this vertical slice: named integer enum values with reviewed
+  names are generated as Kaitai `enums`/field references and Wireshark Lua value
+  tables.
+- COMPLETE for this vertical slice: Wireshark one-byte numeric named flags are
+  generated as bounded `ProtoField.bool` masks while preserving existing
+  endian-specific `add_le` behavior for the primary field.
+- PARTIAL: Kaitai named masks remain explicitly warned/omitted because the
+  generated flat target has no equivalent field-level mask semantics.
+- UNVERIFIED: `kaitai-struct-compiler`, Wireshark `tshark`, and Lua tooling are
+  not installed in this environment; tests verify deterministic generation and
+  warnings, not external execution.
+- `make test`: PASS — 162 Python tests.
+
 ## Exact next action
 
-Expand the authoritative completeness contract and its Python/HTTP/browser
-tests. Specifically cover evaluated versus fully validated packet counts,
-output/array/schema-limit truncation, unsupported constructs, invalid schemas,
-and cancellation or unavailable transport input without collapsing those states
-into unconditional success.
+Add the deterministic request/response investigation corpus and a browser E2E
+walkthrough that keeps the reference schema separate from inference, exercises
+corrupted/truncated validation, and restores the reviewed project. Then run the
+full release command matrix and record Docker/hosted-CI gates honestly.
