@@ -2,7 +2,7 @@
 
 Starting HEAD: `f14e4f1`
 
-Current HEAD: `920aa91`
+Current HEAD: `f96d8f4`
 
 Current milestone: **Milestone A — PARTIAL**
 
@@ -152,8 +152,7 @@ The new workbench E2E is in `e2e/schema-v2-usability.spec.js`.
 - `837ae76 docs: checkpoint phase 20 workbench`
 - `9432d87 feat: expose authoritative schema evaluation contract`
 - `920aa91 feat: add reproducible schema performance corpus`
-- pending `docs/interop-capability-matrix.md` capability matrix checkpoint
-- A docs-only checkpoint commit is pending after this file is updated.
+- `f96d8f4 docs: define interoperability capability matrix`
 
 ## Known regressions / gaps
 
