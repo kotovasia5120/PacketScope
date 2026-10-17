@@ -2,7 +2,7 @@
 
 Starting HEAD: `118a07a`
 
-Current HEAD: `eded146`
+Current HEAD: `4e86f43`
 
 Current milestone: **Milestone F — release verification recorded; Docker BLOCKED**
 
@@ -169,7 +169,7 @@ discloses that cancellation is not supported rather than claiming it.
 ## Commits created in this phase
 
 `029d104`, `04f6dde`, `680590d`, `2159d74`, `3129ab6`, `1e75272`, `a1a6b87`,
-`40b021e`, `fe04c13`, and `eded146`.
+`40b021e`, `fe04c13`, `eded146`, and `4e86f43`.
 
 ## Exact continuation steps
 
